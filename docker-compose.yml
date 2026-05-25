@@ -28,7 +28,7 @@ services:
       retries: 5
 
   pgbouncer:
-    image: edoburu/pgbouncer:1.22.0
+    image: edoburu/pgbouncer:latest
     environment:
       DATABASE_URL: postgres://notification:notification_secret@postgres:5432/notification_db
       POOL_MODE: transaction
@@ -37,6 +37,7 @@ services:
       MIN_POOL_SIZE: 10
       RESERVE_POOL_SIZE: 25
       RESERVE_POOL_TIMEOUT: 3
+      AUTH_TYPE: scram-sha-256
     ports:
       - "6432:5432"
     depends_on:
