@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type CircuitState int
@@ -134,9 +136,10 @@ func (cb *circuitBreaker) transitionTo(to CircuitState) {
 }
 
 type CircuitBreakerRegistry struct {
-	mu       sync.RWMutex
-	breakers map[string]CircuitBreaker
-	cfg      CircuitBreakerConfig
+	mu          sync.RWMutex
+	breakers    map[string]CircuitBreaker
+	cfg         CircuitBreakerConfig
+	redisClient *redis.Client
 }
 
 func NewCircuitBreakerRegistry(cfg CircuitBreakerConfig) *CircuitBreakerRegistry {
@@ -161,16 +164,20 @@ func (r *CircuitBreakerRegistry) Get(channel string) CircuitBreaker {
 		return cb
 	}
 
-	cfg := r.cfg
-	origOnChange := cfg.OnStateChange
-	cfg.OnStateChange = func(from, to CircuitState) {
-		if origOnChange != nil {
-			origOnChange(from, to)
+	if r.redisClient != nil {
+		cb = NewRedisCircuitBreaker(r.redisClient, channel, r.cfg)
+	} else {
+		cfg := r.cfg
+		origOnChange := cfg.OnStateChange
+		cfg.OnStateChange = func(from, to CircuitState) {
+			if origOnChange != nil {
+				origOnChange(from, to)
+			}
+			_ = fmt.Sprintf("circuit breaker %s: %s -> %s", channel, from, to)
 		}
-		_ = fmt.Sprintf("circuit breaker %s: %s -> %s", channel, from, to)
+		cb = NewCircuitBreaker(cfg)
 	}
 
-	cb = NewCircuitBreaker(cfg)
 	r.breakers[channel] = cb
 	return cb
 }

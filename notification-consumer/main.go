@@ -65,7 +65,7 @@ func run() error {
 	rateLimiter := delivery.NewRedisRateLimiter(redisClient, cfg.Rate.LimitPerSecond)
 	retryStrategy := delivery.NewExponentialBackoff(cfg.Retry.BaseDelay, cfg.Retry.MaxDelay)
 
-	cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+	cbRegistry := delivery.NewRedisCircuitBreakerRegistry(redisClient, delivery.CircuitBreakerConfig{
 		FailureThreshold: cfg.CB.FailureThreshold,
 		OpenDuration:     cfg.CB.OpenDuration,
 		HalfOpenMax:      cfg.CB.HalfOpenMaxRequests,

@@ -54,6 +54,15 @@ type mockNotificationRepo struct {
 	claimScheduledBatchErr    error
 	recoverStuckQueuedResult []*domain.Notification
 	recoverStuckQueuedErr    error
+	getRetryReadyCalled      bool
+	getRetryReadyResult      []*domain.Notification
+	getRetryReadyErr         error
+	recoverStuckProcessingCalled bool
+	recoverStuckProcessingResult []*domain.Notification
+	recoverStuckProcessingErr    error
+	recoverOrphanedPendingCalled bool
+	recoverOrphanedPendingResult []*domain.Notification
+	recoverOrphanedPendingErr    error
 }
 
 func (m *mockNotificationRepo) Create(ctx context.Context, n *domain.Notification) error {
@@ -119,6 +128,21 @@ func (m *mockNotificationRepo) ClaimScheduledBatch(ctx context.Context, limit in
 func (m *mockNotificationRepo) RecoverStuckQueued(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
 	m.recoverStuckQueuedCalled = true
 	return m.recoverStuckQueuedResult, m.recoverStuckQueuedErr
+}
+
+func (m *mockNotificationRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	m.getRetryReadyCalled = true
+	return m.getRetryReadyResult, m.getRetryReadyErr
+}
+
+func (m *mockNotificationRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	m.recoverStuckProcessingCalled = true
+	return m.recoverStuckProcessingResult, m.recoverStuckProcessingErr
+}
+
+func (m *mockNotificationRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+	m.recoverOrphanedPendingCalled = true
+	return m.recoverOrphanedPendingResult, m.recoverOrphanedPendingErr
 }
 
 func newTestNotification() *domain.Notification {
@@ -625,5 +649,95 @@ func TestRecoverStuckQueued_AlwaysGoesToHot(t *testing.T) {
 	}
 	if cold.recoverStuckQueuedCalled {
 		t.Fatal("cold.RecoverStuckQueued should not be called")
+	}
+}
+
+// --- GetRetryReady tests ---
+
+func TestGetRetryReady_AlwaysGoesToHot(t *testing.T) {
+	expected := []*domain.Notification{newTestNotification()}
+	hot := &mockNotificationRepo{name: "hot", getRetryReadyResult: expected}
+	cold := &mockNotificationRepo{name: "cold"}
+
+	repo := NewTieredNotificationRepo(hot, cold)
+	result, err := repo.GetRetryReady(context.Background(), 50)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+	if !hot.getRetryReadyCalled {
+		t.Fatal("expected hot.GetRetryReady to be called")
+	}
+	if cold.getRetryReadyCalled {
+		t.Fatal("cold.GetRetryReady should not be called")
+	}
+}
+
+// --- RecoverStuckProcessing tests ---
+
+func TestRecoverStuckProcessing_AlwaysGoesToHot(t *testing.T) {
+	expected := []*domain.Notification{newTestNotification()}
+	hot := &mockNotificationRepo{name: "hot", recoverStuckProcessingResult: expected}
+	cold := &mockNotificationRepo{name: "cold"}
+
+	repo := NewTieredNotificationRepo(hot, cold)
+	result, err := repo.RecoverStuckProcessing(context.Background(), 5*time.Minute, 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+	if !hot.recoverStuckProcessingCalled {
+		t.Fatal("expected hot.RecoverStuckProcessing to be called")
+	}
+	if cold.recoverStuckProcessingCalled {
+		t.Fatal("cold.RecoverStuckProcessing should not be called")
+	}
+}
+
+// --- RecoverOrphanedPending tests ---
+
+func TestRecoverOrphanedPending_AlwaysGoesToHot(t *testing.T) {
+	expected := []*domain.Notification{newTestNotification()}
+	hot := &mockNotificationRepo{name: "hot", recoverOrphanedPendingResult: expected}
+	cold := &mockNotificationRepo{name: "cold"}
+
+	repo := NewTieredNotificationRepo(hot, cold)
+	result, err := repo.RecoverOrphanedPending(context.Background(), 30*time.Second, 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+	if !hot.recoverOrphanedPendingCalled {
+		t.Fatal("expected hot.RecoverOrphanedPending to be called")
+	}
+	if cold.recoverOrphanedPendingCalled {
+		t.Fatal("cold.RecoverOrphanedPending should not be called")
+	}
+}
+
+// --- GetByIdempotencyKey error path ---
+
+func TestGetByIdempotencyKey_ReturnsErrorFromHotWithoutCallingCold(t *testing.T) {
+	expectedErr := errors.New("idempotency lookup error")
+	hot := &mockNotificationRepo{name: "hot", getByIdempotencyKeyErr: expectedErr}
+	cold := &mockNotificationRepo{name: "cold"}
+
+	repo := NewTieredNotificationRepo(hot, cold)
+	_, err := repo.GetByIdempotencyKey(context.Background(), "some-key")
+
+	if err != expectedErr {
+		t.Fatalf("expected error from hot, got: %v", err)
+	}
+	if cold.getByIdempotencyKeyCalled {
+		t.Fatal("cold.GetByIdempotencyKey should not be called when hot returns an error")
 	}
 }

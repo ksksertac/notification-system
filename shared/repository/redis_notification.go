@@ -20,11 +20,14 @@ const (
 	KeyIdxCreatedAt = "idx:created_at"
 	KeyIdxBatch     = "idx:batch:"
 	KeyIdxIdemKey   = "idx:idempotency:"
+	KeyIdxRetry     = "idx:retry"
 	KeySchedule     = "schedule:pending"
 	KeyPersistQueue = "persist:queue"
 	KeyDLQ          = "dlq:"
+	KeyPersisted    = "persisted:"
 
-	IdemKeyTTL = 24 * time.Hour
+	IdemKeyTTL   = 24 * time.Hour
+	PersistedTTL = 2 * time.Hour
 )
 
 type redisNotificationRepo struct {
@@ -341,7 +344,7 @@ func (r *redisNotificationRepo) List(ctx context.Context, req domain.ListNotific
 	ids, err := r.client.ZRevRangeByScore(ctx, sourceKey, &redis.ZRangeBy{
 		Min:   minScore,
 		Max:   maxScore,
-		Count: int64(limit),
+		Count: int64(limit + 1),
 	}).Result()
 	if err != nil {
 		return nil, 0, fmt.Errorf("zrevrangebyscore: %w", err)
@@ -378,14 +381,20 @@ func (r *redisNotificationRepo) List(ctx context.Context, req domain.ListNotific
 
 var updateStatusScript = redis.NewScript(`
 local key = KEYS[1]
+local idxOld = KEYS[2]
+local idxNew = KEYS[3]
 local from = ARGV[1]
 local to = ARGV[2]
 local now = ARGV[3]
+local member = ARGV[4]
+local score = tonumber(ARGV[5])
 local current = redis.call('HGET', key, 'status')
 if current ~= from then
     return 0
 end
 redis.call('HSET', key, 'status', to, 'updated_at', now)
+redis.call('ZREM', idxOld, member)
+redis.call('ZADD', idxNew, score, member)
 return 1
 `)
 
@@ -394,7 +403,20 @@ func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, 
 	key := notificationKey(id)
 	idStr := id.String()
 
-	result, err := updateStatusScript.Run(ctx, r.client, []string{key}, string(from), string(to), now).Int64()
+	// Fetch the notification to get the created_at score before the atomic script
+	n, _ := r.GetByID(ctx, id)
+	score := float64(0)
+	if n != nil {
+		score = float64(n.CreatedAt.UnixNano())
+	}
+
+	idxOld := KeyIdxStatus + string(from)
+	idxNew := KeyIdxStatus + string(to)
+
+	result, err := updateStatusScript.Run(ctx, r.client,
+		[]string{key, idxOld, idxNew},
+		string(from), string(to), now, idStr, score,
+	).Int64()
 	if err != nil {
 		return false, err
 	}
@@ -403,14 +425,6 @@ func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, 
 	}
 
 	pipe := r.client.Pipeline()
-	pipe.ZRem(ctx, KeyIdxStatus+string(from), idStr)
-	n, _ := r.GetByID(ctx, id)
-	score := float64(0)
-	if n != nil {
-		score = float64(n.CreatedAt.UnixNano())
-	}
-	pipe.ZAdd(ctx, KeyIdxStatus+string(to), redis.Z{Score: score, Member: idStr})
-
 	r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
 		"id":   idStr,
 		"from": string(from),
@@ -418,7 +432,7 @@ func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, 
 	})
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		return true, fmt.Errorf("update status indexes: %w", err)
+		return true, fmt.Errorf("update status persist event: %w", err)
 	}
 
 	return true, nil
@@ -426,20 +440,28 @@ func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, 
 
 var updateStatusWithDetailsScript = redis.NewScript(`
 local key = KEYS[1]
+local idxOld = KEYS[2]
+local idxNew = KEYS[3]
 local from = ARGV[1]
 local to = ARGV[2]
 local now = ARGV[3]
+local pmid = ARGV[4]
+local emsg = ARGV[5]
+local member = ARGV[6]
+local score = tonumber(ARGV[7])
 local current = redis.call('HGET', key, 'status')
 if current ~= from then
     return 0
 end
 redis.call('HSET', key, 'status', to, 'updated_at', now)
-if ARGV[4] ~= '' then
-    redis.call('HSET', key, 'provider_msg_id', ARGV[4])
+if pmid ~= '' then
+    redis.call('HSET', key, 'provider_msg_id', pmid)
 end
-if ARGV[5] ~= '' then
-    redis.call('HSET', key, 'error_message', ARGV[5])
+if emsg ~= '' then
+    redis.call('HSET', key, 'error_message', emsg)
 end
+redis.call('ZREM', idxOld, member)
+redis.call('ZADD', idxNew, score, member)
 return 1
 `)
 
@@ -457,8 +479,19 @@ func (r *redisNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id 
 		emsg = *errorMsg
 	}
 
-	result, err := updateStatusWithDetailsScript.Run(ctx, r.client, []string{key},
-		string(from), string(to), now, pmid, emsg,
+	// Fetch the notification to get the created_at score before the atomic script
+	n, _ := r.GetByID(ctx, id)
+	score := float64(0)
+	if n != nil {
+		score = float64(n.CreatedAt.UnixNano())
+	}
+
+	idxOld := KeyIdxStatus + string(from)
+	idxNew := KeyIdxStatus + string(to)
+
+	result, err := updateStatusWithDetailsScript.Run(ctx, r.client,
+		[]string{key, idxOld, idxNew},
+		string(from), string(to), now, pmid, emsg, idStr, score,
 	).Int64()
 	if err != nil {
 		return false, err
@@ -468,14 +501,6 @@ func (r *redisNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id 
 	}
 
 	pipe := r.client.Pipeline()
-	pipe.ZRem(ctx, KeyIdxStatus+string(from), idStr)
-	n, _ := r.GetByID(ctx, id)
-	score := float64(0)
-	if n != nil {
-		score = float64(n.CreatedAt.UnixNano())
-	}
-	pipe.ZAdd(ctx, KeyIdxStatus+string(to), redis.Z{Score: score, Member: idStr})
-
 	extra := map[string]string{
 		"id":   idStr,
 		"from": string(from),
@@ -490,7 +515,7 @@ func (r *redisNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id 
 	r.publishPersistEvent(ctx, pipe, "update_status_details", nil, extra)
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		return true, fmt.Errorf("update status details indexes: %w", err)
+		return true, fmt.Errorf("update status details persist event: %w", err)
 	}
 
 	return true, nil
@@ -517,6 +542,9 @@ func (r *redisNotificationRepo) IncrementRetry(ctx context.Context, id uuid.UUID
 		score = float64(n.CreatedAt.UnixNano())
 	}
 	pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusFailed), redis.Z{Score: score, Member: idStr})
+
+	// Add to retry index so scheduler can pick it up when next_retry_at arrives
+	pipe.ZAdd(ctx, KeyIdxRetry, redis.Z{Score: float64(nextRetryAt.UnixNano()), Member: idStr})
 
 	r.publishPersistEvent(ctx, pipe, "increment_retry", nil, map[string]string{
 		"id":            idStr,
@@ -619,10 +647,17 @@ func (r *redisNotificationRepo) ClaimScheduledBatch(ctx context.Context, limit i
 		return nil, nil
 	}
 
+	notifications, err := r.getNotificationsByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
 	pipe := r.client.Pipeline()
-	for _, idStr := range ids {
+	for _, n := range notifications {
+		idStr := n.ID.String()
+		score := float64(n.CreatedAt.UnixNano())
 		pipe.ZRem(ctx, KeyIdxStatus+string(domain.StatusPending), idStr)
-		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: float64(nowNano), Member: idStr})
+		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: score, Member: idStr})
 
 		r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
 			"id":   idStr,
@@ -634,7 +669,7 @@ func (r *redisNotificationRepo) ClaimScheduledBatch(ctx context.Context, limit i
 		return nil, fmt.Errorf("claim scheduled indexes: %w", err)
 	}
 
-	return r.getNotificationsByIDs(ctx, ids)
+	return notifications, nil
 }
 
 var recoverStuckScript = redis.NewScript(`
@@ -694,6 +729,176 @@ func (r *redisNotificationRepo) RecoverStuckQueued(ctx context.Context, stuckThr
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, fmt.Errorf("recover stuck indexes: %w", err)
+	}
+
+	return r.getNotificationsByIDs(ctx, ids)
+}
+
+func (r *redisNotificationRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	now := time.Now().UTC()
+	nowNano := fmt.Sprintf("%d", now.UnixNano())
+	nowStr := now.Format(time.RFC3339Nano)
+
+	// Get notifications from idx:retry where score (next_retry_at) <= now
+	ids, err := r.client.ZRangeByScore(ctx, KeyIdxRetry, &redis.ZRangeBy{
+		Min:   "-inf",
+		Max:   nowNano,
+		Count: int64(limit),
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("get retry ready: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Transition each from failed to queued, remove from idx:retry
+	pipe := r.client.Pipeline()
+	for _, idStr := range ids {
+		nKey := KeyNotification + idStr
+		pipe.HSet(ctx, nKey, map[string]interface{}{
+			"status":     string(domain.StatusQueued),
+			"updated_at": nowStr,
+		})
+		pipe.ZRem(ctx, KeyIdxRetry, idStr)
+		pipe.ZRem(ctx, KeyIdxStatus+string(domain.StatusFailed), idStr)
+		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: float64(now.UnixNano()), Member: idStr})
+
+		r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
+			"id":   idStr,
+			"from": string(domain.StatusFailed),
+			"to":   string(domain.StatusQueued),
+		})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("get retry ready transition: %w", err)
+	}
+
+	return r.getNotificationsByIDs(ctx, ids)
+}
+
+var recoverStuckProcessingScript = redis.NewScript(`
+local statusKey = KEYS[1]
+local cutoffScore = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local now = ARGV[3]
+
+local stuck = redis.call('ZRANGEBYSCORE', statusKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
+
+local recovered = {}
+for _, id in ipairs(stuck) do
+    local nKey = 'notification:' .. id
+    local updatedAt = redis.call('HGET', nKey, 'updated_at')
+    if updatedAt then
+        redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
+        table.insert(recovered, id)
+    end
+end
+
+return recovered
+`)
+
+func (r *redisNotificationRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-stuckThreshold)
+	cutoffScore := float64(cutoff.UnixNano())
+	nowStr := now.Format(time.RFC3339Nano)
+
+	ids, err := recoverStuckProcessingScript.Run(ctx, r.client,
+		[]string{KeyIdxStatus + string(domain.StatusProcessing)},
+		cutoffScore, limit, nowStr,
+	).StringSlice()
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("recover stuck processing: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	pipe := r.client.Pipeline()
+	for _, idStr := range ids {
+		pipe.ZRem(ctx, KeyIdxStatus+string(domain.StatusProcessing), idStr)
+		n, _ := r.GetByID(ctx, uuid.MustParse(idStr))
+		score := float64(0)
+		if n != nil {
+			score = float64(n.CreatedAt.UnixNano())
+		}
+		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: score, Member: idStr})
+
+		r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
+			"id":   idStr,
+			"from": string(domain.StatusProcessing),
+			"to":   string(domain.StatusQueued),
+		})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("recover stuck processing indexes: %w", err)
+	}
+
+	return r.getNotificationsByIDs(ctx, ids)
+}
+
+var recoverOrphanedPendingScript = redis.NewScript(`
+local pendingKey = KEYS[1]
+local scheduleKey = KEYS[2]
+local cutoffScore = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local now = ARGV[3]
+
+local stale = redis.call('ZRANGEBYSCORE', pendingKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
+
+local recovered = {}
+for _, id in ipairs(stale) do
+    -- Skip if it's a scheduled notification (exists in schedule:pending)
+    local inSchedule = redis.call('ZSCORE', scheduleKey, id)
+    if not inSchedule then
+        local nKey = 'notification:' .. id
+        redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
+        table.insert(recovered, id)
+    end
+end
+
+return recovered
+`)
+
+func (r *redisNotificationRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-staleDuration)
+	cutoffScore := float64(cutoff.UnixNano())
+	nowStr := now.Format(time.RFC3339Nano)
+
+	ids, err := recoverOrphanedPendingScript.Run(ctx, r.client,
+		[]string{KeyIdxStatus + string(domain.StatusPending), KeySchedule},
+		cutoffScore, limit, nowStr,
+	).StringSlice()
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("recover orphaned pending: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	pipe := r.client.Pipeline()
+	for _, idStr := range ids {
+		pipe.ZRem(ctx, KeyIdxStatus+string(domain.StatusPending), idStr)
+		n, _ := r.GetByID(ctx, uuid.MustParse(idStr))
+		score := float64(0)
+		if n != nil {
+			score = float64(n.CreatedAt.UnixNano())
+		}
+		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: score, Member: idStr})
+
+		r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
+			"id":   idStr,
+			"from": string(domain.StatusPending),
+			"to":   string(domain.StatusQueued),
+		})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("recover orphaned pending indexes: %w", err)
 	}
 
 	return r.getNotificationsByIDs(ctx, ids)

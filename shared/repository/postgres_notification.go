@@ -327,3 +327,150 @@ func (r *postgresNotificationRepo) RecoverStuckQueued(ctx context.Context, stuck
 
 	return stuck, nil
 }
+
+func (r *postgresNotificationRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	now := time.Now().UTC()
+
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var notifications []*domain.Notification
+	err = tx.SelectContext(ctx, &notifications,
+		`SELECT * FROM notifications
+		 WHERE status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= $1
+		 LIMIT $2
+		 FOR UPDATE SKIP LOCKED`,
+		now, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("select retry ready: %w", err)
+	}
+
+	if len(notifications) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]uuid.UUID, len(notifications))
+	for i, n := range notifications {
+		ids[i] = n.ID
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE notifications SET status = $1, updated_at = $2 WHERE id = ANY($3)`,
+		domain.StatusQueued, now, pq.Array(ids),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update retry ready: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	for _, n := range notifications {
+		n.Status = domain.StatusQueued
+	}
+
+	return notifications, nil
+}
+
+func (r *postgresNotificationRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	cutoff := time.Now().UTC().Add(-stuckThreshold)
+
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var stuck []*domain.Notification
+	err = tx.SelectContext(ctx, &stuck,
+		`SELECT * FROM notifications
+		 WHERE status = 'processing' AND updated_at <= $1
+		 LIMIT $2
+		 FOR UPDATE SKIP LOCKED`,
+		cutoff, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("select stuck processing: %w", err)
+	}
+
+	if len(stuck) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]uuid.UUID, len(stuck))
+	for i, n := range stuck {
+		ids[i] = n.ID
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE notifications SET status = $1, updated_at = $2 WHERE id = ANY($3)`,
+		domain.StatusQueued, time.Now().UTC(), pq.Array(ids),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reset stuck processing: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	for _, n := range stuck {
+		n.Status = domain.StatusQueued
+	}
+
+	return stuck, nil
+}
+
+func (r *postgresNotificationRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+	cutoff := time.Now().UTC().Add(-staleDuration)
+
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var orphaned []*domain.Notification
+	err = tx.SelectContext(ctx, &orphaned,
+		`SELECT * FROM notifications
+		 WHERE status = 'pending' AND scheduled_at IS NULL AND updated_at <= $1
+		 LIMIT $2
+		 FOR UPDATE SKIP LOCKED`,
+		cutoff, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("select orphaned pending: %w", err)
+	}
+
+	if len(orphaned) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]uuid.UUID, len(orphaned))
+	for i, n := range orphaned {
+		ids[i] = n.ID
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE notifications SET status = $1, updated_at = $2 WHERE id = ANY($3)`,
+		domain.StatusQueued, time.Now().UTC(), pq.Array(ids),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reset orphaned pending: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	for _, n := range orphaned {
+		n.Status = domain.StatusQueued
+	}
+
+	return orphaned, nil
+}

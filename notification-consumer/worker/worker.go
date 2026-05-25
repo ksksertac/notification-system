@@ -268,22 +268,7 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 
 	wp.repo.IncrementRetry(ctx, n.ID, nextRetry, errMsg)
 
-	logger.Warn("scheduling retry", "retry_count", n.RetryCount+1, "next_retry_at", nextRetry, "error", errMsg)
-
-	go func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			retried, _ := wp.repo.GetByID(context.Background(), n.ID)
-			if retried != nil && retried.Status == domain.StatusFailed {
-				wp.repo.UpdateStatus(context.Background(), n.ID, domain.StatusFailed, domain.StatusQueued)
-				wp.publisher.Publish(context.Background(), retried)
-			}
-		case <-ctx.Done():
-		}
-	}()
+	logger.Warn("retry scheduled via persistence", "retry_count", n.RetryCount+1, "next_retry_at", nextRetry, "error", errMsg)
 }
 
 func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification) {

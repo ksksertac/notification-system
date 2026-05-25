@@ -52,8 +52,13 @@ func New(
 func (w *Writer) Start(ctx context.Context) {
 	w.ensureGroup(ctx)
 
+	consumerName := fmt.Sprintf("dbwriter-%s", uuid.New().String()[:8])
+
+	// Reclaim pending messages from crashed instances before entering main loop
+	w.reclaimPending(ctx, consumerName)
+
 	w.wg.Add(1)
-	go w.run(ctx)
+	go w.run(ctx, consumerName)
 }
 
 func (w *Writer) Stop() {
@@ -68,26 +73,30 @@ func (w *Writer) ensureGroup(ctx context.Context) {
 	}
 }
 
-func (w *Writer) run(ctx context.Context) {
+func (w *Writer) run(ctx context.Context, consumerName string) {
 	defer w.wg.Done()
 
-	consumerName := fmt.Sprintf("dbwriter-%s", uuid.New().String()[:8])
 	ticker := time.NewTicker(w.flushInterval)
 	defer ticker.Stop()
+
+	reclaimTicker := time.NewTicker(60 * time.Second)
+	defer reclaimTicker.Stop()
 
 	var pending []pendingMsg
 
 	for {
 		select {
 		case <-ctx.Done():
-			w.flush(pending)
+			w.flush(ctx, pending)
 			return
+		case <-reclaimTicker.C:
+			w.reclaimPending(ctx, consumerName)
 		case <-ticker.C:
 			msgs := w.readBatch(ctx, consumerName)
 			pending = append(pending, msgs...)
 
 			if len(pending) >= w.batchSize || (len(pending) > 0 && len(msgs) == 0) {
-				w.flush(pending)
+				w.flush(ctx, pending)
 				w.ackMessages(ctx, pending)
 				pending = nil
 			}
@@ -129,7 +138,7 @@ func (w *Writer) readBatch(ctx context.Context, consumer string) []pendingMsg {
 	return msgs
 }
 
-func (w *Writer) flush(msgs []pendingMsg) {
+func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) {
 	if len(msgs) == 0 {
 		return
 	}
@@ -144,7 +153,7 @@ func (w *Writer) flush(msgs []pendingMsg) {
 	creates, updates := repository.SplitPersistActions(events)
 
 	if len(creates) > 0 {
-		w.flushCreates(creates)
+		w.flushCreates(ctx, creates)
 	}
 
 	if len(updates) > 0 {
@@ -154,7 +163,7 @@ func (w *Writer) flush(msgs []pendingMsg) {
 	w.logger.Debug("flushed to postgres", "creates", len(creates), "updates", len(updates))
 }
 
-func (w *Writer) flushCreates(notifications []*domain.Notification) {
+func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notification) {
 	for i := 0; i < len(notifications); i += w.batchSize {
 		end := i + w.batchSize
 		if end > len(notifications) {
@@ -164,6 +173,16 @@ func (w *Writer) flushCreates(notifications []*domain.Notification) {
 
 		if err := w.repo.CreateBatch(context.Background(), batch); err != nil {
 			w.logger.Error("failed to batch insert to postgres", "count", len(batch), "error", err)
+			continue
+		}
+
+		// Mark each notification as persisted in Redis so cleanup won't evict unpersisted data
+		pipe := w.redis.Pipeline()
+		for _, n := range batch {
+			pipe.Set(ctx, repository.KeyPersisted+n.ID.String(), "1", repository.PersistedTTL)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			w.logger.Error("failed to mark notifications as persisted", "count", len(batch), "error", err)
 		}
 	}
 }
@@ -218,6 +237,48 @@ func (w *Writer) flushUpdates(updates []map[string]string) {
 			if err := w.repo.MoveToDLQ(context.Background(), n, errMsg); err != nil {
 				w.logger.Error("failed to move to DLQ in postgres", "id", idStr, "error", err)
 			}
+		}
+	}
+}
+
+func (w *Writer) reclaimPending(ctx context.Context, consumerName string) {
+	for {
+		result, _, err := w.redis.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+			Stream:   persistStream,
+			Group:    groupName,
+			Consumer: consumerName,
+			MinIdle:  30 * time.Second,
+			Start:    "0-0",
+			Count:    int64(w.batchSize),
+		}).Result()
+
+		if err != nil {
+			if err != redis.Nil {
+				w.logger.Error("reclaim pending failed", "error", err)
+			}
+			return
+		}
+
+		if len(result) == 0 {
+			return
+		}
+
+		var msgs []pendingMsg
+		for _, msg := range result {
+			evt, err := repository.ParsePersistEvent(msg.Values)
+			if err != nil {
+				msgs = append(msgs, pendingMsg{streamID: msg.ID})
+				continue
+			}
+			msgs = append(msgs, pendingMsg{streamID: msg.ID, event: evt})
+		}
+
+		w.flush(ctx, msgs)
+		w.ackMessages(ctx, msgs)
+		w.logger.Info("reclaimed pending messages", "count", len(msgs))
+
+		if len(result) < w.batchSize {
+			return
 		}
 	}
 }

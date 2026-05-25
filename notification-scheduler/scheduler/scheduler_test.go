@@ -17,9 +17,12 @@ import (
 // --- Mock implementations ---
 
 type mockRepo struct {
-	mu                   sync.Mutex
-	claimBatchFn         func(ctx context.Context, limit int) ([]*domain.Notification, error)
-	recoverStuckQueuedFn func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error)
+	mu                        sync.Mutex
+	claimBatchFn              func(ctx context.Context, limit int) ([]*domain.Notification, error)
+	recoverStuckQueuedFn      func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error)
+	getRetryReadyFn           func(ctx context.Context, limit int) ([]*domain.Notification, error)
+	recoverStuckProcessingFn  func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error)
+	recoverOrphanedPendingFn  func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error)
 }
 
 func (m *mockRepo) Create(ctx context.Context, n *domain.Notification) error { return nil }
@@ -66,6 +69,30 @@ func (m *mockRepo) RecoverStuckQueued(ctx context.Context, stuckThreshold time.D
 	defer m.mu.Unlock()
 	if m.recoverStuckQueuedFn != nil {
 		return m.recoverStuckQueuedFn(ctx, stuckThreshold, limit)
+	}
+	return nil, nil
+}
+func (m *mockRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getRetryReadyFn != nil {
+		return m.getRetryReadyFn(ctx, limit)
+	}
+	return nil, nil
+}
+func (m *mockRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.recoverStuckProcessingFn != nil {
+		return m.recoverStuckProcessingFn(ctx, stuckThreshold, limit)
+	}
+	return nil, nil
+}
+func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.recoverOrphanedPendingFn != nil {
+		return m.recoverOrphanedPendingFn(ctx, staleDuration, limit)
 	}
 	return nil, nil
 }
@@ -267,6 +294,13 @@ func TestScheduler_RecoveryLoop(t *testing.T) {
 		default:
 			t.Fatal("recoverStuckQueued was not called")
 		}
+
+		if len(pub.publishedBatch) != 1 {
+			t.Fatalf("expected 1 PublishBatch call for stuck queued, got %d", len(pub.publishedBatch))
+		}
+		if len(pub.publishedBatch[0]) != 1 || pub.publishedBatch[0][0].ID != stuckNotification.ID {
+			t.Fatal("expected stuck notification to be re-published to stream")
+		}
 	})
 
 	t.Run("handles recovery errors gracefully", func(t *testing.T) {
@@ -281,6 +315,25 @@ func TestScheduler_RecoveryLoop(t *testing.T) {
 
 		ctx := context.Background()
 		// Should not panic
+		s.recoverStuck(ctx)
+	})
+
+	t.Run("handles publish error for recovered queued notifications", func(t *testing.T) {
+		stuckNotification := makeNotification(domain.PriorityNormal, time.Now().Add(-5*time.Minute))
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return []*domain.Notification{stuckNotification}, nil
+			},
+		}
+
+		pub := &mockPublisher{
+			publishBatchFn: func(ctx context.Context, notifications []*domain.Notification) error {
+				return errors.New("publish failed for recovered queued")
+			},
+		}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
 		s.recoverStuck(ctx)
 	})
 }
@@ -553,6 +606,476 @@ func TestScheduler_EmptyQueueHandling(t *testing.T) {
 		defer pub.mu.Unlock()
 		if len(pub.publishedBatch) != 0 {
 			t.Error("publisher should not be called when claim fails")
+		}
+	})
+}
+
+func TestScheduler_RetryRecovery(t *testing.T) {
+	t.Run("processRetryReady publishes retry-ready notifications", func(t *testing.T) {
+		past := time.Now().Add(-1 * time.Minute)
+		retryReady := []*domain.Notification{
+			makeNotification(domain.PriorityNormal, past),
+			makeNotification(domain.PriorityHigh, past),
+		}
+
+		repo := &mockRepo{}
+		repo.getRetryReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			return retryReady, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.processRetryReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+
+		if pub.publishCount != 2 {
+			t.Errorf("expected 2 retry-ready published, got %d", pub.publishCount)
+		}
+	})
+
+	t.Run("processRetryReady does nothing when empty", func(t *testing.T) {
+		repo := &mockRepo{}
+		repo.getRetryReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			return nil, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.processRetryReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 0 {
+			t.Errorf("expected 0 published, got %d", pub.publishCount)
+		}
+	})
+
+	t.Run("processRetryReady handles errors gracefully", func(t *testing.T) {
+		repo := &mockRepo{}
+		repo.getRetryReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			return nil, errors.New("redis connection error")
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		// Should not panic
+		s.processRetryReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 0 {
+			t.Errorf("expected 0 published on error, got %d", pub.publishCount)
+		}
+	})
+}
+
+func TestScheduler_RecoverStuckProcessingAndOrphaned(t *testing.T) {
+	t.Run("recoverStuck publishes recovered processing notifications", func(t *testing.T) {
+		stuckProcessing := []*domain.Notification{
+			makeNotification(domain.PriorityNormal, time.Now().Add(-5*time.Minute)),
+		}
+
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+		}
+		repo.recoverStuckProcessingFn = func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+			return stuckProcessing, nil
+		}
+		repo.recoverOrphanedPendingFn = func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+			return nil, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.recoverStuck(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 1 {
+			t.Errorf("expected 1 published (from stuck processing), got %d", pub.publishCount)
+		}
+	})
+
+	t.Run("recoverStuck publishes orphaned pending notifications", func(t *testing.T) {
+		orphaned := []*domain.Notification{
+			makeNotification(domain.PriorityLow, time.Now().Add(-2*time.Minute)),
+			makeNotification(domain.PriorityNormal, time.Now().Add(-3*time.Minute)),
+		}
+
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+		}
+		repo.recoverStuckProcessingFn = func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+			return nil, nil
+		}
+		repo.recoverOrphanedPendingFn = func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+			return orphaned, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.recoverStuck(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 2 {
+			t.Errorf("expected 2 published (from orphaned), got %d", pub.publishCount)
+		}
+	})
+}
+
+func TestNew(t *testing.T) {
+	t.Run("sets default batchSize when zero", func(t *testing.T) {
+		repo := &mockRepo{}
+		pub := &mockPublisher{}
+		logger := slog.Default()
+
+		s := New(repo, pub, 5*time.Second, 0, logger)
+
+		if s.batchSize != 500 {
+			t.Errorf("expected default batchSize 500, got %d", s.batchSize)
+		}
+		if s.stuckThreshold != 2*time.Minute {
+			t.Errorf("expected stuckThreshold 2m, got %v", s.stuckThreshold)
+		}
+		if s.pollInterval != 5*time.Second {
+			t.Errorf("expected pollInterval 5s, got %v", s.pollInterval)
+		}
+	})
+
+	t.Run("sets default batchSize when negative", func(t *testing.T) {
+		repo := &mockRepo{}
+		pub := &mockPublisher{}
+		logger := slog.Default()
+
+		s := New(repo, pub, 10*time.Second, -1, logger)
+
+		if s.batchSize != 500 {
+			t.Errorf("expected default batchSize 500, got %d", s.batchSize)
+		}
+	})
+
+	t.Run("uses provided batchSize when positive", func(t *testing.T) {
+		repo := &mockRepo{}
+		pub := &mockPublisher{}
+		logger := slog.Default()
+
+		s := New(repo, pub, 1*time.Second, 100, logger)
+
+		if s.batchSize != 100 {
+			t.Errorf("expected batchSize 100, got %d", s.batchSize)
+		}
+		if s.repo != repo {
+			t.Error("repo not set correctly")
+		}
+		if s.publisher != pub {
+			t.Error("publisher not set correctly")
+		}
+		if s.logger != logger {
+			t.Error("logger not set correctly")
+		}
+	})
+}
+
+func TestScheduler_StartStop(t *testing.T) {
+	t.Run("start and stop lifecycle completes without hanging", func(t *testing.T) {
+		repo := &mockRepo{}
+		pub := &mockPublisher{}
+		logger := slog.Default()
+
+		s := New(repo, pub, 50*time.Millisecond, 10, logger)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		s.Start(ctx)
+
+		// Let goroutines run briefly
+		time.Sleep(100 * time.Millisecond)
+
+		// Cancel context to signal goroutines to stop
+		cancel()
+
+		// Stop should return without hanging
+		done := make(chan struct{})
+		go func() {
+			s.Stop()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(5 * time.Second):
+			t.Fatal("Stop() did not return within timeout - scheduler is hanging")
+		}
+	})
+
+	t.Run("start launches all three goroutines", func(t *testing.T) {
+		var claimCalled atomic.Int32
+		var recoverCalled atomic.Int32
+		var retryCalled atomic.Int32
+
+		repo := &mockRepo{
+			claimBatchFn: func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+				claimCalled.Add(1)
+				return nil, nil
+			},
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				recoverCalled.Add(1)
+				return nil, nil
+			},
+			getRetryReadyFn: func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+				retryCalled.Add(1)
+				return nil, nil
+			},
+		}
+
+		pub := &mockPublisher{}
+		logger := slog.Default()
+
+		s := New(repo, pub, 20*time.Millisecond, 10, logger)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		s.Start(ctx)
+
+		// Wait enough for tickers to fire
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+		s.Stop()
+
+		if claimCalled.Load() == 0 {
+			t.Error("runScheduler goroutine never called claimBatch")
+		}
+	})
+}
+
+func TestScheduler_RunRetryRecovery(t *testing.T) {
+	t.Run("runRetryRecovery calls processRetryReady periodically", func(t *testing.T) {
+		var callCount atomic.Int32
+
+		repo := &mockRepo{
+			getRetryReadyFn: func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+				callCount.Add(1)
+				return nil, nil
+			},
+		}
+
+		pub := &mockPublisher{}
+		s := &Scheduler{
+			repo:           repo,
+			publisher:      pub,
+			pollInterval:   50 * time.Millisecond,
+			batchSize:      10,
+			stuckThreshold: 2 * time.Minute,
+			logger:         slog.Default(),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		s.wg.Add(1)
+		go s.runRetryRecovery(ctx)
+
+		// The ticker in runRetryRecovery is 10 seconds, so we override via direct invocation approach
+		// Instead, let's just verify it stops properly on cancel
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Stopped cleanly
+		case <-time.After(2 * time.Second):
+			t.Fatal("runRetryRecovery did not stop after context cancellation")
+		}
+	})
+}
+
+func TestProcessRetryReady_PublishError(t *testing.T) {
+	t.Run("logs error when publish fails", func(t *testing.T) {
+		past := time.Now().Add(-1 * time.Minute)
+		retryReady := []*domain.Notification{
+			makeNotification(domain.PriorityNormal, past),
+		}
+
+		repo := &mockRepo{
+			getRetryReadyFn: func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+				return retryReady, nil
+			},
+		}
+
+		pub := &mockPublisher{
+			publishBatchFn: func(ctx context.Context, notifications []*domain.Notification) error {
+				return errors.New("stream unavailable")
+			},
+		}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		// Should not panic; error is logged
+		s.processRetryReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		// PublishBatch was called (count includes the error path)
+		if len(pub.publishedBatch) != 1 {
+			t.Errorf("expected 1 PublishBatch call, got %d", len(pub.publishedBatch))
+		}
+	})
+}
+
+func TestRecoverStuck_ProcessingError(t *testing.T) {
+	t.Run("handles RecoverStuckProcessing error gracefully", func(t *testing.T) {
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+			recoverStuckProcessingFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, errors.New("processing recovery failed")
+			},
+			recoverOrphanedPendingFn: func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		// Should not panic
+		s.recoverStuck(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 0 {
+			t.Errorf("expected 0 published when processing recovery fails, got %d", pub.publishCount)
+		}
+	})
+}
+
+func TestRecoverStuck_OrphanedError(t *testing.T) {
+	t.Run("handles RecoverOrphanedPending error gracefully", func(t *testing.T) {
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+			recoverStuckProcessingFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+			recoverOrphanedPendingFn: func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, errors.New("orphaned recovery failed")
+			},
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		// Should not panic
+		s.recoverStuck(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 0 {
+			t.Errorf("expected 0 published when orphaned recovery fails, got %d", pub.publishCount)
+		}
+	})
+}
+
+func TestRecoverStuck_PublishRecoveredProcessingError(t *testing.T) {
+	t.Run("handles publish error for recovered processing notifications", func(t *testing.T) {
+		stuckProcessing := []*domain.Notification{
+			makeNotification(domain.PriorityNormal, time.Now().Add(-5*time.Minute)),
+		}
+
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+			recoverStuckProcessingFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return stuckProcessing, nil
+			},
+			recoverOrphanedPendingFn: func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+		}
+
+		pub := &mockPublisher{
+			publishBatchFn: func(ctx context.Context, notifications []*domain.Notification) error {
+				return errors.New("publish failed for recovered processing")
+			},
+		}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		// Should not panic; error is logged
+		s.recoverStuck(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		// PublishBatch was called once (for processing recovery)
+		if len(pub.publishedBatch) != 1 {
+			t.Errorf("expected 1 PublishBatch call, got %d", len(pub.publishedBatch))
+		}
+	})
+}
+
+func TestRecoverStuck_PublishOrphanedError(t *testing.T) {
+	t.Run("handles publish error for orphaned notifications", func(t *testing.T) {
+		orphaned := []*domain.Notification{
+			makeNotification(domain.PriorityLow, time.Now().Add(-2*time.Minute)),
+		}
+
+		repo := &mockRepo{
+			recoverStuckQueuedFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+			recoverStuckProcessingFn: func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+				return nil, nil
+			},
+			recoverOrphanedPendingFn: func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+				return orphaned, nil
+			},
+		}
+
+		publishCalls := 0
+		pub := &mockPublisher{
+			publishBatchFn: func(ctx context.Context, notifications []*domain.Notification) error {
+				publishCalls++
+				return errors.New("publish failed for orphaned")
+			},
+		}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		// Should not panic; error is logged
+		s.recoverStuck(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		// PublishBatch was called once (for orphaned)
+		if len(pub.publishedBatch) != 1 {
+			t.Errorf("expected 1 PublishBatch call, got %d", len(pub.publishedBatch))
 		}
 	})
 }

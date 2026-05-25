@@ -69,6 +69,10 @@ func (p *webhookProvider) Send(ctx context.Context, recipient string, channel st
 		return &SendResult{Retryable: true}, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &SendResult{Retryable: true}, fmt.Errorf("provider rate limited (429): %s", string(respBody))
+	}
+
 	if resp.StatusCode >= 400 {
 		return &SendResult{Retryable: false}, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(respBody))
 	}

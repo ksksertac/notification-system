@@ -271,7 +271,9 @@ func (h *NotificationHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var nextCursor *uuid.UUID
-	if len(notifications) == req.Limit {
+	if len(notifications) > req.Limit {
+		notifications = notifications[:req.Limit]
+		responses = responses[:req.Limit]
 		id := notifications[len(notifications)-1].ID
 		nextCursor = &id
 	}

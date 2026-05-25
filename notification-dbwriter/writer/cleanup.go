@@ -78,11 +78,17 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 	pipe := w.redis.Pipeline()
 
 	for _, idStr := range ids {
+		persisted, _ := w.redis.Exists(ctx, repository.KeyPersisted+idStr).Result()
+		if persisted == 0 {
+			continue
+		}
+
 		nKey := repository.KeyNotification + idStr
 
 		vals, err := w.redis.HGetAll(ctx, nKey).Result()
 		if err != nil || len(vals) == 0 {
 			pipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
+			pipe.Del(ctx, repository.KeyPersisted+idStr)
 			continue
 		}
 
@@ -103,6 +109,7 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 		}
 
 		pipe.Del(ctx, repository.KeyDLQ+idStr)
+		pipe.Del(ctx, repository.KeyPersisted+idStr)
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {

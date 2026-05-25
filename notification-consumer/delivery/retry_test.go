@@ -49,3 +49,59 @@ func TestExponentialBackoff_ShouldRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestExponentialBackoff_CapsAtMaxDelay(t *testing.T) {
+	maxDelay := 10 * time.Second
+	eb := NewExponentialBackoff(1*time.Second, maxDelay)
+
+	// High attempt number should still be capped at maxDelay
+	for attempt := 10; attempt <= 20; attempt++ {
+		delay := eb.NextDelay(attempt)
+		if delay > maxDelay {
+			t.Errorf("attempt %d: delay %v exceeds maxDelay %v", attempt, delay, maxDelay)
+		}
+		if delay <= 0 {
+			t.Errorf("attempt %d: delay should be positive, got %v", attempt, delay)
+		}
+	}
+}
+
+func TestExponentialBackoff_FirstAttemptDelay(t *testing.T) {
+	baseDelay := 100 * time.Millisecond
+	maxDelay := 10 * time.Second
+	eb := NewExponentialBackoff(baseDelay, maxDelay)
+
+	// First attempt: base delay * 2^0 = baseDelay, plus jitter up to baseDelay*1
+	// So delay should be between baseDelay and 2*baseDelay
+	for i := 0; i < 100; i++ {
+		delay := eb.NextDelay(1)
+		if delay < baseDelay {
+			t.Errorf("first attempt delay %v should be >= baseDelay %v", delay, baseDelay)
+		}
+		if delay > 2*baseDelay {
+			t.Errorf("first attempt delay %v should be <= 2*baseDelay %v", delay, 2*baseDelay)
+		}
+	}
+}
+
+func TestExponentialBackoff_ShouldRetryEdgeCases(t *testing.T) {
+	eb := NewExponentialBackoff(1*time.Second, 60*time.Second)
+
+	// Attempt 0 should retry
+	if !eb.ShouldRetry(0, 5) {
+		t.Error("ShouldRetry(0, 5) should be true")
+	}
+
+	// maxAttempts 0 means never retry
+	if eb.ShouldRetry(0, 0) {
+		t.Error("ShouldRetry(0, 0) should be false")
+	}
+
+	// maxAttempts 1 means only attempt 0 retries
+	if !eb.ShouldRetry(0, 1) {
+		t.Error("ShouldRetry(0, 1) should be true")
+	}
+	if eb.ShouldRetry(1, 1) {
+		t.Error("ShouldRetry(1, 1) should be false")
+	}
+}

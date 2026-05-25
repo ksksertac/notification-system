@@ -212,6 +212,15 @@ func (m *mockRepo) ClaimScheduledBatch(ctx context.Context, limit int) ([]*domai
 func (m *mockRepo) RecoverStuckQueued(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *mockRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
 
@@ -965,6 +974,774 @@ func TestStaleMessageRecovery(t *testing.T) {
 			t.Error("expected at least one claim attempt")
 		}
 	})
+}
+
+// --- Additional test cases for coverage ---
+
+func TestNewWorkerPool(t *testing.T) {
+	cfg := WorkerPoolConfig{
+		ConsumerGroup: "my-group",
+		WorkerCount:   4,
+		WeightHigh:    10,
+		WeightNormal:  5,
+		WeightLow:     2,
+		ClaimMinIdle:  30 * time.Second,
+		ClaimInterval: 10 * time.Second,
+		MaxRetries:    5,
+	}
+
+	consumer := &mockConsumer{}
+	publisher := &mockPublisher{}
+	provider := &mockProvider{}
+	rateLimiter := &mockRateLimiter{allowed: true}
+	cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		OpenDuration:     30 * time.Second,
+		HalfOpenMax:      2,
+	})
+	retry := &mockRetryStrategy{shouldRetry: true, nextDelay: 100 * time.Millisecond}
+	repo := newMockRepo()
+	broadcaster := &mockBroadcaster{}
+	metrics := &mockMetrics{}
+	tmplEngine := &mockTemplateEngine{}
+	logger := slog.Default()
+
+	wp := NewWorkerPool(cfg, consumer, publisher, provider, rateLimiter, cbRegistry, retry, repo, broadcaster, metrics, tmplEngine, logger)
+
+	if wp == nil {
+		t.Fatal("expected non-nil WorkerPool")
+	}
+	if wp.cfg.ConsumerGroup != "my-group" {
+		t.Errorf("expected ConsumerGroup 'my-group', got %q", wp.cfg.ConsumerGroup)
+	}
+	if wp.cfg.WorkerCount != 4 {
+		t.Errorf("expected WorkerCount 4, got %d", wp.cfg.WorkerCount)
+	}
+	if wp.cfg.MaxRetries != 5 {
+		t.Errorf("expected MaxRetries 5, got %d", wp.cfg.MaxRetries)
+	}
+	if wp.consumer != consumer {
+		t.Error("expected consumer to be set")
+	}
+	if wp.publisher != publisher {
+		t.Error("expected publisher to be set")
+	}
+	if wp.provider != provider {
+		t.Error("expected provider to be set")
+	}
+	if wp.rateLimiter != rateLimiter {
+		t.Error("expected rateLimiter to be set")
+	}
+	if wp.cbRegistry != cbRegistry {
+		t.Error("expected cbRegistry to be set")
+	}
+	if wp.repo != repo {
+		t.Error("expected repo to be set")
+	}
+	if wp.tmplEngine != tmplEngine {
+		t.Error("expected tmplEngine to be set")
+	}
+}
+
+func TestWorkerPool_StartStop(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityHigh,
+	}
+
+	msgDelivered := make(chan struct{}, 1)
+
+	consumer := &mockConsumer{
+		readCalls: []readCall{
+			{
+				stream: queue.StreamHigh,
+				count:  10,
+				msgs: []queue.Message{
+					{
+						ID:             "start-stop-msg-1",
+						StreamName:     queue.StreamHigh,
+						NotificationID: nID,
+						Channel:        domain.ChannelEmail,
+						Recipient:      "user@test.com",
+						Content:        "Hello",
+						Priority:       domain.PriorityHigh,
+					},
+				},
+			},
+		},
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			select {
+			case msgDelivered <- struct{}{}:
+			default:
+			}
+			return &delivery.SendResult{ProviderMsgID: "start-stop-provider"}, nil
+		},
+	}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.consumer = consumer
+		o.repo = repo
+		o.provider = provider
+	})
+	wp.cfg.ClaimInterval = 5 * time.Second // long interval so claimer doesn't interfere
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wp.Start(ctx)
+
+	// Wait for the message to be delivered or timeout
+	select {
+	case <-msgDelivered:
+		// success
+	case <-time.After(2 * time.Second):
+		// Message might not have been delivered depending on timing, that's okay
+	}
+
+	cancel()
+	wp.Stop()
+
+	// If we got here without hanging, Start/Stop lifecycle works correctly
+}
+
+func TestProcessMessage_RateLimitDenied(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+
+	consumer := &mockConsumer{}
+	publisher := &mockPublisher{}
+	metrics := &mockMetrics{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.consumer = consumer
+		o.publisher = publisher
+		o.rateLimiter = &mockRateLimiter{allowed: false, err: nil}
+	})
+	wp.metrics = metrics
+
+	msg := queue.Message{
+		ID:             "msg-rate-limited",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "user@example.com",
+		Content:        "Rate limited content",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Verify message was acked
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) == 0 {
+		t.Error("expected message to be acknowledged after rate limit denial")
+	}
+	consumer.mu.Unlock()
+
+	// Verify rate limit hit metric recorded
+	metrics.mu.Lock()
+	if metrics.rateLimitHits != 1 {
+		t.Errorf("expected 1 rate limit hit metric, got %d", metrics.rateLimitHits)
+	}
+	metrics.mu.Unlock()
+
+	// Verify status was reverted to queued
+	repo.mu.Lock()
+	foundRevert := false
+	for _, su := range repo.statusUpdates {
+		if su.id == nID && su.from == domain.StatusProcessing && su.to == domain.StatusQueued {
+			foundRevert = true
+			break
+		}
+	}
+	repo.mu.Unlock()
+	if !foundRevert {
+		t.Error("expected status to be reverted to queued on rate limit denial")
+	}
+
+	// Verify re-enqueue was triggered (publisher will be called after 500ms delay)
+	time.Sleep(700 * time.Millisecond)
+	publisher.mu.Lock()
+	if len(publisher.published) != 1 {
+		t.Errorf("expected 1 re-enqueue, got %d", len(publisher.published))
+	} else if publisher.published[0].ID != nID {
+		t.Errorf("expected re-enqueued notification ID %s, got %s", nID, publisher.published[0].ID)
+	}
+	publisher.mu.Unlock()
+}
+
+func TestProcessMessage_RateLimitError(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelSMS,
+		Priority: domain.PriorityNormal,
+	}
+
+	consumer := &mockConsumer{}
+	publisher := &mockPublisher{}
+	metrics := &mockMetrics{}
+
+	// Rate limiter returns an error AND allowed=false
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.consumer = consumer
+		o.publisher = publisher
+		o.rateLimiter = &mockRateLimiter{allowed: false, err: errors.New("redis timeout")}
+	})
+	wp.metrics = metrics
+
+	msg := queue.Message{
+		ID:             "msg-rate-error",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "Rate error content",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Verify message was acked (rate limiter error with !allowed leads to re-enqueue path)
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) == 0 {
+		t.Error("expected message to be acknowledged after rate limiter error")
+	}
+	consumer.mu.Unlock()
+
+	// Verify rate limit hit metric recorded
+	metrics.mu.Lock()
+	if metrics.rateLimitHits != 1 {
+		t.Errorf("expected 1 rate limit hit metric, got %d", metrics.rateLimitHits)
+	}
+	metrics.mu.Unlock()
+
+	// Verify re-enqueue was triggered
+	time.Sleep(700 * time.Millisecond)
+	publisher.mu.Lock()
+	if len(publisher.published) != 1 {
+		t.Errorf("expected 1 re-enqueue after rate limiter error, got %d", len(publisher.published))
+	}
+	publisher.mu.Unlock()
+}
+
+func TestProcessMessage_CircuitBreakerOpen(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+
+	consumer := &mockConsumer{}
+	publisher := &mockPublisher{}
+	metrics := &mockMetrics{}
+
+	// Create a circuit breaker registry with low failure threshold and trip it
+	cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		OpenDuration:     1 * time.Hour, // long enough it won't transition back
+		HalfOpenMax:      1,
+	})
+	// Trip the circuit breaker for "email" channel
+	cb := cbRegistry.Get("email")
+	cb.RecordFailure() // This should trip it since threshold is 1
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.consumer = consumer
+		o.publisher = publisher
+	})
+	wp.cbRegistry = cbRegistry
+	wp.metrics = metrics
+
+	msg := queue.Message{
+		ID:             "msg-cb-open",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "user@example.com",
+		Content:        "CB open content",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Verify message was acked
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) == 0 {
+		t.Error("expected message to be acknowledged when circuit breaker is open")
+	}
+	consumer.mu.Unlock()
+
+	// Verify circuit breaker open metric recorded
+	metrics.mu.Lock()
+	if metrics.circuitBreakerOpens != 1 {
+		t.Errorf("expected 1 circuit breaker open metric, got %d", metrics.circuitBreakerOpens)
+	}
+	metrics.mu.Unlock()
+
+	// Verify re-enqueue was triggered
+	time.Sleep(700 * time.Millisecond)
+	publisher.mu.Lock()
+	if len(publisher.published) != 1 {
+		t.Errorf("expected 1 re-enqueue when CB open, got %d", len(publisher.published))
+	} else if publisher.published[0].ID != nID {
+		t.Errorf("expected re-enqueued notification ID %s, got %s", nID, publisher.published[0].ID)
+	}
+	publisher.mu.Unlock()
+}
+
+func TestProcessMessage_NotFoundInRepo(t *testing.T) {
+	// Use a notification ID that doesn't exist in the repo
+	nID := uuid.New()
+	repo := newMockRepo()
+	// Do NOT add any notification to repo - so GetByID returns nil
+
+	consumer := &mockConsumer{}
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			t.Error("provider.Send should not be called when notification not found")
+			return nil, nil
+		},
+	}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.consumer = consumer
+		o.provider = provider
+	})
+
+	msg := queue.Message{
+		ID:             "msg-not-found",
+		StreamName:     queue.StreamHigh,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "nobody@example.com",
+		Content:        "Should not be sent",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Verify message was acked (nil notification -> ack and skip)
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) == 0 {
+		t.Error("expected message to be acknowledged when notification is not found")
+	}
+	consumer.mu.Unlock()
+}
+
+func TestProcessMessage_GetByIDError(t *testing.T) {
+	nID := uuid.New()
+
+	// Create a custom repo that returns an error from GetByID
+	errorRepo := &errorMockRepo{
+		getByIDErr: errors.New("database connection lost"),
+	}
+
+	consumer := &mockConsumer{}
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			t.Error("provider.Send should not be called when GetByID returns error")
+			return nil, nil
+		},
+	}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.consumer = consumer
+		o.provider = provider
+	})
+	wp.repo = errorRepo
+
+	msg := queue.Message{
+		ID:             "msg-repo-error",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "Should not be sent",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Verify message was NOT acked (early return on error without ack)
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) != 0 {
+		t.Error("expected message to NOT be acknowledged when GetByID returns error")
+	}
+	consumer.mu.Unlock()
+}
+
+func TestProcessMessage_TemplateRendering(t *testing.T) {
+	t.Run("template renders successfully with metadata", func(t *testing.T) {
+		nID := uuid.New()
+		repo := newMockRepo()
+		repo.notifications[nID] = &domain.Notification{
+			ID:       nID,
+			Status:   domain.StatusQueued,
+			Channel:  domain.ChannelEmail,
+			Priority: domain.PriorityNormal,
+			Metadata: []byte(`{"name":"John"}`),
+		}
+
+		var sentContent string
+		provider := &mockProvider{
+			sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+				sentContent = content
+				return &delivery.SendResult{ProviderMsgID: "tmpl-msg"}, nil
+			},
+		}
+
+		consumer := &mockConsumer{}
+
+		wp := newTestWorkerPool(func(o *testPoolOpts) {
+			o.repo = repo
+			o.provider = provider
+			o.consumer = consumer
+		})
+		// Use a template engine that actually transforms content
+		wp.tmplEngine = &transformingTemplateEngine{rendered: "Hello John!"}
+
+		msg := queue.Message{
+			ID:             "msg-tmpl",
+			StreamName:     queue.StreamNormal,
+			NotificationID: nID,
+			Channel:        domain.ChannelEmail,
+			Recipient:      "john@example.com",
+			Content:        "Hello {{.name}}!",
+		}
+
+		ctx := context.Background()
+		wp.processMessage(ctx, msg)
+
+		if sentContent != "Hello John!" {
+			t.Errorf("expected rendered content 'Hello John!', got %q", sentContent)
+		}
+	})
+
+	t.Run("template rendering failure uses raw content", func(t *testing.T) {
+		nID := uuid.New()
+		repo := newMockRepo()
+		repo.notifications[nID] = &domain.Notification{
+			ID:       nID,
+			Status:   domain.StatusQueued,
+			Channel:  domain.ChannelEmail,
+			Priority: domain.PriorityNormal,
+			Metadata: []byte(`{"name":"John"}`),
+		}
+
+		var sentContent string
+		provider := &mockProvider{
+			sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+				sentContent = content
+				return &delivery.SendResult{ProviderMsgID: "tmpl-fail-msg"}, nil
+			},
+		}
+
+		consumer := &mockConsumer{}
+
+		wp := newTestWorkerPool(func(o *testPoolOpts) {
+			o.repo = repo
+			o.provider = provider
+			o.consumer = consumer
+		})
+		// Use a template engine that returns an error
+		wp.tmplEngine = &errorTemplateEngine{}
+
+		msg := queue.Message{
+			ID:             "msg-tmpl-fail",
+			StreamName:     queue.StreamNormal,
+			NotificationID: nID,
+			Channel:        domain.ChannelEmail,
+			Recipient:      "john@example.com",
+			Content:        "Hello {{.name}}!",
+		}
+
+		ctx := context.Background()
+		wp.processMessage(ctx, msg)
+
+		// When template rendering fails, raw content should be used
+		if sentContent != "Hello {{.name}}!" {
+			t.Errorf("expected raw content 'Hello {{.name}}!', got %q", sentContent)
+		}
+	})
+
+	t.Run("nil metadata skips template rendering", func(t *testing.T) {
+		nID := uuid.New()
+		repo := newMockRepo()
+		repo.notifications[nID] = &domain.Notification{
+			ID:       nID,
+			Status:   domain.StatusQueued,
+			Channel:  domain.ChannelEmail,
+			Priority: domain.PriorityNormal,
+			Metadata: nil, // nil metadata
+		}
+
+		var sentContent string
+		provider := &mockProvider{
+			sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+				sentContent = content
+				return &delivery.SendResult{ProviderMsgID: "no-tmpl-msg"}, nil
+			},
+		}
+
+		consumer := &mockConsumer{}
+
+		wp := newTestWorkerPool(func(o *testPoolOpts) {
+			o.repo = repo
+			o.provider = provider
+			o.consumer = consumer
+		})
+		// Template engine that would fail if called
+		wp.tmplEngine = &errorTemplateEngine{}
+
+		msg := queue.Message{
+			ID:             "msg-nil-meta",
+			StreamName:     queue.StreamNormal,
+			NotificationID: nID,
+			Channel:        domain.ChannelEmail,
+			Recipient:      "user@example.com",
+			Content:        "Raw content here",
+		}
+
+		ctx := context.Background()
+		wp.processMessage(ctx, msg)
+
+		if sentContent != "Raw content here" {
+			t.Errorf("expected raw content 'Raw content here', got %q", sentContent)
+		}
+	})
+}
+
+func TestReEnqueue(t *testing.T) {
+	publisher := &mockPublisher{}
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.publisher = publisher
+	})
+
+	n := &domain.Notification{
+		ID:       uuid.New(),
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+
+	ctx := context.Background()
+	wp.reEnqueue(ctx, n)
+
+	// reEnqueue publishes after a 500ms delay in a goroutine
+	time.Sleep(700 * time.Millisecond)
+
+	publisher.mu.Lock()
+	if len(publisher.published) != 1 {
+		t.Fatalf("expected 1 published notification, got %d", len(publisher.published))
+	}
+	if publisher.published[0].ID != n.ID {
+		t.Errorf("expected published notification ID %s, got %s", n.ID, publisher.published[0].ID)
+	}
+	publisher.mu.Unlock()
+}
+
+func TestPollStreams_ReadError(t *testing.T) {
+	consumer := &mockConsumer{
+		readCalls: []readCall{
+			{stream: queue.StreamHigh, count: 10, msgs: nil, err: errors.New("read error on high stream")},
+			{stream: queue.StreamNormal, count: 5, msgs: nil, err: errors.New("read error on normal stream")},
+			{stream: queue.StreamLow, count: 2, msgs: nil, err: errors.New("read error on low stream")},
+		},
+	}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.consumer = consumer
+	})
+
+	ctx := context.Background()
+	processed := wp.pollStreams(ctx, "test-consumer")
+
+	// When all reads return errors, no messages are processed
+	if processed {
+		t.Error("expected pollStreams to return false when all reads error")
+	}
+}
+
+func TestProcessMessage_NilBroadcaster(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{ProviderMsgID: "nil-bc-msg"}, nil
+		},
+	}
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.provider = provider
+		o.consumer = consumer
+	})
+	wp.broadcaster = nil // explicitly nil
+
+	msg := queue.Message{
+		ID:             "msg-nil-broadcaster",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "user@example.com",
+		Content:        "Hello",
+	}
+
+	ctx := context.Background()
+	// Should not panic when broadcaster is nil
+	wp.processMessage(ctx, msg)
+
+	// Verify it still delivered
+	repo.mu.Lock()
+	foundDelivered := false
+	for _, su := range repo.statusUpdates {
+		if su.id == nID && su.to == domain.StatusDelivered {
+			foundDelivered = true
+			break
+		}
+	}
+	repo.mu.Unlock()
+	if !foundDelivered {
+		t.Error("expected delivery even with nil broadcaster")
+	}
+}
+
+func TestProcessMessage_NilMetrics(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelSMS,
+		Priority: domain.PriorityNormal,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{ProviderMsgID: "nil-metrics-msg"}, nil
+		},
+	}
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.provider = provider
+		o.consumer = consumer
+	})
+	wp.metrics = nil // explicitly nil
+
+	msg := queue.Message{
+		ID:             "msg-nil-metrics",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "Hello",
+	}
+
+	ctx := context.Background()
+	// Should not panic when metrics is nil
+	wp.processMessage(ctx, msg)
+}
+
+// --- Additional mock types ---
+
+type errorMockRepo struct {
+	getByIDErr error
+}
+
+func (m *errorMockRepo) Create(ctx context.Context, n *domain.Notification) error { return nil }
+func (m *errorMockRepo) CreateBatch(ctx context.Context, notifications []*domain.Notification) error {
+	return nil
+}
+func (m *errorMockRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Notification, error) {
+	return nil, m.getByIDErr
+}
+func (m *errorMockRepo) GetByBatchID(ctx context.Context, batchID uuid.UUID) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) GetByIdempotencyKey(ctx context.Context, key string) (*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) List(ctx context.Context, req domain.ListNotificationsRequest) ([]*domain.Notification, int64, error) {
+	return nil, 0, nil
+}
+func (m *errorMockRepo) UpdateStatus(ctx context.Context, id uuid.UUID, from, to domain.Status) (bool, error) {
+	return true, nil
+}
+func (m *errorMockRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
+	return true, nil
+}
+func (m *errorMockRepo) IncrementRetry(ctx context.Context, id uuid.UUID, nextRetryAt time.Time, errorMsg string) error {
+	return nil
+}
+func (m *errorMockRepo) MoveToDLQ(ctx context.Context, n *domain.Notification, errorMsg string) error {
+	return nil
+}
+func (m *errorMockRepo) GetScheduledReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) ClaimScheduledBatch(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) RecoverStuckQueued(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+func (m *errorMockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
+
+var _ repository.NotificationRepository = (*errorMockRepo)(nil)
+
+type transformingTemplateEngine struct {
+	rendered string
+}
+
+func (m *transformingTemplateEngine) Render(tmpl string, metadata []byte) (string, error) {
+	return m.rendered, nil
+}
+
+type errorTemplateEngine struct{}
+
+func (m *errorTemplateEngine) Render(tmpl string, metadata []byte) (string, error) {
+	return "", errors.New("template parse error")
 }
 
 // --- Tracking consumer wrapper for verifying read parameters ---

@@ -4,6 +4,24 @@ import (
 	"testing"
 )
 
+func TestPriority_String(t *testing.T) {
+	tests := []struct {
+		priority Priority
+		want     string
+	}{
+		{PriorityHigh, "high"},
+		{PriorityNormal, "normal"},
+		{PriorityLow, "low"},
+		{Priority(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.priority.String(); got != tt.want {
+			t.Errorf("Priority(%d).String() = %q, want %q", tt.priority, got, tt.want)
+		}
+	}
+}
+
 func TestChannel_IsValid(t *testing.T) {
 	tests := []struct {
 		channel Channel
@@ -31,6 +49,7 @@ func TestChannel_MaxContentLength(t *testing.T) {
 		{ChannelSMS, 160},
 		{ChannelEmail, 10000},
 		{ChannelPush, 256},
+		{Channel("invalid"), 0},
 	}
 
 	for _, tt := range tests {
