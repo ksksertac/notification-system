@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/sertacyildirim/notification-system/notification-dbwriter/migrator"
 	"github.com/sertacyildirim/notification-system/notification-dbwriter/writer"
 	"github.com/sertacyildirim/notification-system/shared/config"
 	"github.com/sertacyildirim/notification-system/shared/database"
@@ -54,6 +55,10 @@ func run() error {
 	}
 	cancel()
 	logger.Info("connected to redis")
+
+	if err := migrator.Run(context.Background(), redisClient, cfg.DB.DSN(), "migrations", logger); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
 
 	repo := repository.NewPostgresNotificationRepo(db)
 

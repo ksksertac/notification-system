@@ -3,7 +3,6 @@ package writer
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -111,25 +110,3 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 	}
 }
 
-func EvictNotification(ctx context.Context, client *redis.Client, idStr string, logger *slog.Logger) {
-	nKey := repository.KeyNotification + idStr
-	vals, err := client.HGetAll(ctx, nKey).Result()
-	if err != nil || len(vals) == 0 {
-		return
-	}
-
-	pipe := client.Pipeline()
-	pipe.Del(ctx, nKey)
-	pipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
-	if s := vals["status"]; s != "" {
-		pipe.ZRem(ctx, repository.KeyIdxStatus+s, idStr)
-	}
-	if ch := vals["channel"]; ch != "" {
-		pipe.ZRem(ctx, repository.KeyIdxChannel+ch, idStr)
-	}
-	if bid := vals["batch_id"]; bid != "" {
-		pipe.SRem(ctx, repository.KeyIdxBatch+bid, idStr)
-	}
-	pipe.Del(ctx, repository.KeyDLQ+idStr)
-	pipe.Exec(ctx)
-}

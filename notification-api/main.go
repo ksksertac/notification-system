@@ -23,7 +23,7 @@ import (
 
 // @title Notification System API
 // @version 1.0
-// @description Event-driven notification system supporting SMS, Email, and Push channels with priority queuing, retry logic, and real-time status tracking.
+// @description Event-driven notification system with Redis-first hot/cold tiered storage. Supports SMS, Email, and Push channels with priority queuing, retry logic, and real-time status tracking.
 // @host localhost:8080
 // @BasePath /api/v1
 func main() {

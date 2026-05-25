@@ -8,7 +8,6 @@ Scalable, event-driven notification system built with Go. Processes and delivers
                            ┌──────────────────────────────────────────────────┐
                            │             notification-api                     │
 Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buffer             │
-                           │  Auto-migration (Redis leader election)          │
                            │              ↓                                  │
                            │  Batch HSET to Redis (500 items)                │
                            │  + Index updates (status, channel, created_at)  │
@@ -31,12 +30,14 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
               │  idx:batch:{batchId}— Set              │   │  notification-dbwriter       │
               │  idx:idempotency:{k}— String (TTL 24h) │   │  (x N replicas)             │
               │  schedule:pending   — Sorted Set       │   │                             │
-              │                                        │   │  Consumer group on           │
-              │  notifications:high │ :normal │ :low   │   │  persist:queue stream        │
-              │  (priority delivery streams)           │   │        ↓                     │
-              └────────────────────────────────────────┘   │  Batch INSERT via PgBouncer  │
-                                  ↓                        │        ↓                     │
-                                  ↓                        │  PostgreSQL (cold storage)   │
+              │                                        │   │  Auto-migration (leader lock)│
+              │  notifications:high │ :normal │ :low   │   │  Consumer group on           │
+              │  (priority delivery streams)           │   │  persist:queue stream        │
+              └────────────────────────────────────────┘   │        ↓                     │
+                                  ↓                        │  Batch INSERT via PgBouncer  │
+                                  ↓                        │  Cleanup (evict >1h entries) │
+                                                           │        ↓                     │
+                                                           │  PostgreSQL (cold storage)   │
 ┌───────────────────────────────────────────────────────┐  └─────────────────────────────┘
 │              notification-consumer (x N replicas)      │            ↓
 │                                                        │  ┌──────────────────────────┐
@@ -53,8 +54,8 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │                    notification-scheduler (x N replicas)                      │
 │                                                                              │
-│  Poll Redis schedule:pending (5s) ──→ ZRANGEBYSCORE ──→ PublishBatch         │
-│  Each pod claims different items via atomic ZPOPMIN — no locks               │
+│  Poll Redis schedule:pending (5s) ──→ Lua claim script ──→ PublishBatch      │
+│  Each pod claims different items via atomic Lua ZREM — no locks              │
 │  Recovery loop (30s) ──→ stuck 'queued' in idx:status → reset to 'pending'   │
 └───────────────────────────────────────────────────────────────────────────────┘
 
@@ -71,10 +72,10 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 
 | Service | Description | Scaling | README |
 |---------|-------------|---------|--------|
-| [notification-api](notification-api/) | REST API, WebSocket, Swagger, auto-migration | Horizontal (stateless) | [Details](notification-api/README.md) |
+| [notification-api](notification-api/) | REST API, WebSocket, Swagger, tiered reads | Horizontal (stateless) | [Details](notification-api/README.md) |
 | [notification-consumer](notification-consumer/) | Queue workers, delivery, retry, circuit breaker | Horizontal (consumer groups) | [Details](notification-consumer/README.md) |
-| [notification-scheduler](notification-scheduler/) | Scheduled + orphaned notification processing | Horizontal (atomic ZPOPMIN) | [Details](notification-scheduler/README.md) |
-| [notification-dbwriter](notification-dbwriter/) | Async Redis-to-PostgreSQL persistence | Horizontal (consumer groups) | [Details](notification-dbwriter/README.md) |
+| [notification-scheduler](notification-scheduler/) | Scheduled + orphaned notification processing | Horizontal (Lua race-to-claim) | [Details](notification-scheduler/README.md) |
+| [notification-dbwriter](notification-dbwriter/) | Async Redis-to-PostgreSQL persistence, auto-migration, cleanup | Horizontal (consumer groups) | [Details](notification-dbwriter/README.md) |
 | [shared](shared/) | Domain models, config, Redis, queue, repository | Library (not deployed) | - |
 
 ## Quick Start
@@ -266,13 +267,13 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Go 1.23+ |
+| Language | Go 1.24+ |
 | HTTP | Chi router |
 | Primary Data Store | Redis (Hashes, Sorted Sets, Streams, Sets) |
 | Cold Storage | PostgreSQL 16 + PgBouncer (dbwriter only) |
 | Queue | Redis Streams |
 | Rate Limit | Redis Lua sliding window (inbound global + outbound per-channel) |
-| Migrations | golang-migrate (auto, leader election) |
+| Migrations | golang-migrate (auto, Redis leader election via dbwriter) |
 | API Docs | Swagger (swaggo) |
 | Metrics | Prometheus + Grafana |
 | Logging | Structured JSON + Loki + Promtail |
@@ -322,10 +323,8 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 │   ├── Dockerfile
 │   ├── handler/                 # HTTP handlers + Prometheus metrics
 │   ├── middleware/              # Correlation ID, logging, recovery, rate limit
-│   ├── migrator/                # Auto-migration (leader election)
 │   ├── service/                 # Business logic, write buffer, optimistic publish
-│   ├── websocket/               # Real-time updates
-│   └── migrations/              # SQL migrations (used by dbwriter)
+│   └── websocket/               # Real-time updates
 │
 ├── notification-consumer/       # Consumer microservice
 │   ├── Dockerfile
@@ -336,11 +335,13 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 │
 ├── notification-scheduler/      # Scheduler microservice
 │   ├── Dockerfile
-│   └── scheduler/               # ZPOPMIN on schedule:pending + recovery loop
+│   └── scheduler/               # Lua race-to-claim on schedule:pending + recovery loop
 │
 ├── notification-dbwriter/       # Async persistence microservice
 │   ├── Dockerfile
-│   └── writer/                  # persist:queue consumer, batch INSERT via PgBouncer
+│   ├── migrator/                # Auto-migration (Redis leader election)
+│   ├── migrations/              # SQL migration files
+│   └── writer/                  # persist:queue consumer, batch INSERT, cleanup
 │
 ├── observability/               # Monitoring & alerting configs
 │   ├── prometheus/              # Scrape config + alert rules

@@ -15,16 +15,18 @@ Scheduled and orphaned notification processor for the Event-Driven Notification 
 ### Scheduler Loop (every 5s)
 
 ```
-1. ZRANGEBYSCORE schedule:pending -inf <now> LIMIT 0 500
-   <- scheduled notifications whose time has arrived
-2. For each batch, execute Lua script:
-   - ZSCORE schedule:pending <id>           <- verify still present (not claimed by another pod)
-   - ZREM schedule:pending <id>             <- atomic claim
-   - HSET notification:{id} status queued   <- update status in Redis Hash
-   - ZADD idx:status:queued <score> <id>    <- move to queued index
-   - ZREM idx:status:pending <id>           <- remove from pending index
-3. Publish to persist:queue stream          <- async PostgreSQL persistence
-4. Redis Pipeline XADD (batch publish to priority streams)
+1. Lua script (atomic, server-side):
+   - ZRANGEBYSCORE schedule:pending -inf <now> LIMIT 0 500
+   - For each ID:
+     - HGET notification:{id} status        <- verify still 'pending'
+     - HSET notification:{id} status queued  <- claim (update status)
+     - ZREM schedule:pending {id}            <- remove from schedule
+   - Returns list of claimed IDs
+2. Go pipeline (index updates for claimed IDs):
+   - ZREM idx:status:pending {id}           <- remove from pending index
+   - ZADD idx:status:queued <score> {id}    <- add to queued index
+   - XADD persist:queue                     <- async PostgreSQL persistence
+3. Redis Pipeline XADD (batch publish to priority streams)
 ```
 
 ### Recovery Loop (every 30s)

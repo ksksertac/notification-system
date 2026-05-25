@@ -92,7 +92,7 @@ The primary writer to PostgreSQL. The notification-api also connects to PostgreS
 
 On startup, dbwriter pods compete for a Redis lock (`migration-leader-lock`). The winner runs database migrations via `golang-migrate`. Other pods wait until the lock is released. No separate init container needed.
 
-This responsibility was moved from notification-api since dbwriter is now the only service with a PostgreSQL connection.
+This responsibility was moved from notification-api since dbwriter is the primary PostgreSQL writer. The API also connects to PostgreSQL but only for read-only cold data fallback.
 
 ## Configuration
 
