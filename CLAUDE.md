@@ -30,6 +30,16 @@ claude "review all code and update docs"
 claude "move migrator from API to dbwriter"
 ```
 
+## Testing Strategy
+
+- **Unit tests**: domain, handlers, service, circuit breaker, retry, template
+- **Integration tests**: Redis repository via miniredis (Lua script atomicity, sorted set indexes, CAS)
+- **Race condition tests**: concurrent pod claim simulation, concurrent status CAS, idempotency under concurrency
+- **E2E tests**: full notification lifecycle (create → schedule → deliver → DLQ)
+- **SonarCloud**: continuous quality gate on every PR (see `sonar-project.properties`)
+- **Run**: `go test ./...` per module, `go test -tags=e2e ./tests/e2e/...` for E2E
+- **See**: `TESTING.md` for full strategy and commands
+
 ## Project Conventions
 
 - Go 1.24, Chi router, go-redis/v9

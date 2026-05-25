@@ -84,6 +84,27 @@ Redis handles all hot-path operations (writes, status updates, lookups for last 
 - [x] Aligned Go versions (1.24) across go.mod, Dockerfiles, CI workflows
 - [x] Documentation pass: all READMEs updated to match actual implementation
 
+### Phase 8: Testing & Quality
+- [x] Unit tests: domain models, handlers, service layer, circuit breaker, retry
+- [x] Integration tests: Redis repository with miniredis (Lua scripts, CAS, indexes)
+- [x] Race condition tests: concurrent claims, concurrent status updates, idempotency under concurrency
+- [x] E2E tests: full notification lifecycle, batch, scheduled, retry/DLQ, rate limiting
+- [x] Worker tests: weighted polling, message processing, stale recovery
+- [x] Scheduler tests: claim batch, recovery loop, concurrent pod simulation
+- [x] SonarCloud integration for continuous code quality and coverage tracking
+- [x] TESTING.md strategy document with run commands and coverage targets
+
+### Coverage Results
+| Package | Coverage |
+|---------|----------|
+| domain | 82.8% |
+| repository | 59.8% |
+| service | 72.8% |
+| worker | 63.0% |
+| scheduler | 65.2% |
+| template | 92.3% |
+| delivery (CB, retry) | 54.6% |
+
 ## Scaling Strategy
 
 ```
