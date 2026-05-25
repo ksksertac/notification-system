@@ -49,13 +49,42 @@ All status transitions are performed against Redis, not PostgreSQL:
 
 DLQ entries are stored as Redis Hashes (`dlq:{notification_id}`) containing the notification payload, failure reason, and retry history. These are also published to `persist:queue` for long-term storage.
 
-## Crash Recovery
+## Safety Net — Multi-Layer Recovery
 
-| Scenario | Mechanism | How |
-|----------|-----------|-----|
-| Consumer crash mid-processing | XPENDING + XCLAIM | Other consumers claim unacknowledged messages after idle threshold |
-| Provider temporarily down | Circuit breaker | Opens after 5 failures, probes after 30s |
-| Permanent delivery failure | Dead Letter Queue | After max retries, moves to DLQ Hash in Redis |
+| # | Scenario | Mechanism | Recovery | Max Delay |
+|---|----------|-----------|----------|-----------|
+| 1 | Provider temporary failure | Exponential backoff retry | `IncrementRetry` → `idx:retry` sorted set → scheduler re-enqueues when delay expires | 2s–60s |
+| 2 | Provider permanent failure | Dead Letter Queue | Moved to DLQ immediately, no retry | Immediate |
+| 3 | Max retries exceeded (5 default) | Dead Letter Queue | Moved to DLQ after final attempt | Immediate |
+| 4 | Consumer crash mid-processing | XPENDING + XCLAIM | Claimer goroutine claims unacknowledged messages after idle threshold | ~15s |
+| 5 | Consumer crash (status stuck as `processing`) | Scheduler recovery loop | Resets to `queued` + re-publishes to stream | ~2min |
+| 6 | Rate limited | Re-enqueue with delay | Status reset to `queued`, re-published after 500ms | 500ms |
+| 7 | Circuit breaker open | Fast fail | Returns immediately without calling provider, consumer retries on next cycle | Varies |
+| 8 | Provider temporarily down (all channels) | Circuit breaker per channel | Opens after 5 failures, half-open probe after 30s, closes on success | 30s |
+
+### Retry Flow (Exponential Backoff)
+
+```
+Delivery failure (retryable)
+    │
+    ▼
+IncrementRetry: retry_count++, status=failed, next_retry_at = now + backoff(retry_count)
+    │
+    ▼
+ZADD idx:retry <next_retry_at_unixnano> <notification_id>
+    │
+    ▼ (scheduler polls idx:retry every 10s)
+    │
+ZRANGEBYSCORE idx:retry -inf <now>  →  found!
+    │
+    ▼
+Transition: failed → queued, ZREM from idx:retry
+    │
+    ▼
+PublishBatch to priority stream  →  consumer picks up again
+```
+
+Backoff delays: 2s → 4s → 8s → 16s → 32s → 60s (capped). With jitter to prevent thundering herd.
 
 ## Metrics (Prometheus on :9090)
 

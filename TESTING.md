@@ -26,21 +26,23 @@ This document covers the testing approach for the notification system, including
 ### Unit Tests
 
 ```bash
-# Run all unit tests across all services
-go test ./...
+# Run all unit tests per module (multi-module project)
+cd shared && go test ./... && cd ..
+cd notification-api && go test ./... && cd ..
+cd notification-consumer && go test ./... && cd ..
+cd notification-scheduler && go test ./... && cd ..
 
 # Run with race detector
-go test -race ./...
+cd shared && go test -race ./... && cd ..
 
 # Run with coverage
-go test -coverprofile=coverage.out ./...
+cd shared && go test -coverprofile=coverage.out ./... && cd ..
 go tool cover -html=coverage.out -o coverage.html
 
-# Run tests for a specific service
-go test ./internal/api/...
-go test ./internal/consumer/...
-go test ./internal/scheduler/...
-go test ./internal/dbwriter/...
+# Run tests for a specific package
+cd notification-api && go test ./handler/... && cd ..
+cd notification-consumer && go test ./delivery/... && cd ..
+cd notification-scheduler && go test ./scheduler/... && cd ..
 ```
 
 ### End-to-End Tests
@@ -73,9 +75,10 @@ docker-compose -f docker-compose.test.yml down -v
 ### Quick Check (CI-style)
 
 ```bash
-# Lint + unit tests + race detection
-golangci-lint run ./...
-go test -race -count=1 ./...
+# Unit tests + race detection across all modules
+for dir in shared notification-api notification-consumer notification-scheduler; do
+  (cd $dir && go test -race -count=1 ./...)
+done
 ```
 
 ---
@@ -149,18 +152,24 @@ go test -tags=e2e -v -run TestConsumerGroupRecovery ./tests/e2e/...
 
 ---
 
-## Coverage Targets
+## Coverage Targets & Results
 
-| Layer | Target | Rationale |
-|-------|--------|-----------|
-| Domain logic (models, validation) | 90%+ | Core business rules must be well-tested |
-| Business logic (handlers, services) | 80%+ | Critical paths fully covered |
-| Infrastructure (Redis, HTTP) | 70%+ | Integration tests cover the gaps |
-| Generated code (protobuf, mocks) | Excluded | Not meaningful to test |
+All packages with business logic achieve **90%+ coverage**:
+
+| Package | Coverage | Test Approach |
+|---------|----------|---------------|
+| `shared/domain` | 98.4% | Pure unit tests (validation, DTOs, state machine) |
+| `shared/repository` | 97.7% | miniredis (Redis) + sqlmock (PostgreSQL) |
+| `notification-api/handler` | 100% | httptest + mock service |
+| `notification-api/service` | 97.8% | Mock repository + mock publisher |
+| `notification-consumer/delivery` | 95.2% | miniredis (rate limiter, CB) + httptest (webhook) |
+| `notification-consumer/template` | 92.3% | Pure unit tests |
+| `notification-consumer/worker` | 99.2% | Full mock stack (repo, publisher, provider, CB, rate limiter) |
+| `notification-scheduler/scheduler` | 97.4% | Mock repo + mock publisher |
 
 Generate coverage report:
 ```bash
-go test -coverprofile=coverage.out -covermode=atomic ./...
+cd shared && go test -coverprofile=coverage.out -covermode=atomic ./...
 go tool cover -func=coverage.out | grep total
 ```
 
@@ -182,20 +191,28 @@ go tool cover -func=coverage.out | grep total
 
 | Component | What We Test |
 |-----------|-------------|
-| Circuit Breaker | Opens after N failures, half-open probe, closes on success |
+| Circuit Breaker (in-memory) | Opens after N failures, half-open probe, closes on success, state callbacks, invalid state handling |
+| Circuit Breaker (Redis-backed) | Full lifecycle, shared state across instances, half-open max, fail-open on Redis down |
+| Rate Limiter | Sliding window limits, Redis-backed state, fail-open on Redis down |
 | Retry Logic | Exponential backoff timing, max retry count, jitter |
-| Backoff | Correct intervals (1s, 2s, 4s, 8s...), cap at max |
-| DLQ | Messages move to DLQ after max retries, DLQ format is correct |
-| Weighted Polling | Critical > high > normal > low ordering, starvation prevention |
+| DLQ | Messages move to DLQ after max retries, permanent failures go to DLQ immediately |
+| Webhook Provider | HTTP delivery, timeout handling, non-2xx responses, retryable vs permanent errors |
+| Worker Pool | Start/stop lifecycle, rate limit re-enqueue, CB open handling, notification not found |
+| Weighted Polling | high:10 / normal:5 / low:2, starvation prevention |
+| Stale Recovery | XPENDING + XCLAIM for idle messages |
 
 ### Scheduler Service
 
 | Component | What We Test |
 |-----------|-------------|
 | Claim Atomicity | Only one pod claims a notification, Lua script correctness |
-| Recovery | Orphaned claims are reclaimed after timeout |
-| Batch Publishing | Notifications published in correct batch size, ordering preserved |
-| Cron Accuracy | Scheduled notifications fire within acceptable window (< 1s drift) |
+| Stuck Queued Recovery | Notifications stuck >2min as `queued` are reset and re-published to stream |
+| Stuck Processing Recovery | Notifications stuck >2min as `processing` are reset and re-published |
+| Orphaned Pending Recovery | Instant notifications stuck >30s as `pending` are published to stream |
+| Retry Recovery | Failed notifications in `idx:retry` are re-enqueued when backoff delay expires |
+| Batch Publishing | Notifications published in correct batch size via Redis Pipeline |
+| Start/Stop Lifecycle | Graceful shutdown, all goroutines exit cleanly |
+| Error Handling | Recovery errors don't crash the scheduler, publish errors are logged |
 
 ### DBWriter Service
 

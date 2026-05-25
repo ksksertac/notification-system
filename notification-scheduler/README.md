@@ -31,15 +31,40 @@ Scheduled and orphaned notification processor for the Event-Driven Notification 
 
 ### Recovery Loop (every 30s)
 
+Three recovery mechanisms run in parallel to catch every failure mode:
+
+**1. Stuck Queued Recovery (> 2min)**
 ```
-1. ZRANGEBYSCORE idx:status:queued -inf <now - 2min>
-   (notifications stuck as 'queued' for > 2 minutes -- pod crashed after claim but before delivery)
-2. Lua script resets each to 'pending':
-   - HSET notification:{id} status pending
-   - ZADD idx:status:pending <score> <id>
-   - ZREM idx:status:queued <id>
-3. Next scheduler cycle picks them up
+ZRANGEBYSCORE idx:status:queued -inf <now - 2min>
+→ Lua script resets status to 'pending'
+→ Go code re-publishes to priority stream immediately (no waiting for next scheduler cycle)
 ```
+Catches: pod crashed after claim but before stream publish.
+
+**2. Stuck Processing Recovery (> 2min)**
+```
+ZRANGEBYSCORE idx:status:processing -inf <now - 2min>
+→ Lua script resets status to 'queued'
+→ Go code re-publishes to priority stream immediately
+```
+Catches: consumer pod crashed mid-delivery, message ACK'd but status never updated.
+
+**3. Orphaned Pending Recovery (> 30s, instant only)**
+```
+ZRANGEBYSCORE idx:status:pending -inf <now - 30s>
+→ Lua script checks notification is NOT in schedule:pending (skip scheduled ones)
+→ Resets status to 'queued' + publishes to stream
+```
+Catches: API wrote notification to Redis but optimistic stream publish failed.
+
+### Retry Recovery Loop (every 10s)
+
+```
+ZRANGEBYSCORE idx:retry -inf <now>
+→ Transitions failed → queued, removes from idx:retry
+→ Publishes to priority stream for re-delivery
+```
+Catches: notifications that failed delivery and are waiting for their exponential backoff delay to expire. The consumer writes `next_retry_at` to `idx:retry` sorted set (score = UnixNano), and the scheduler picks them up when the delay has passed.
 
 ## Scaling — Race-to-Claim (No Ring Hash)
 
@@ -81,8 +106,10 @@ return 0       -- another pod already took it
 | Scenario | State | Recovery | Max delay |
 |----------|-------|----------|-----------|
 | Crash before Lua script completes | Items remain in `schedule:pending` sorted set | Other pods claim immediately | ~5s |
-| Crash after claim, before Redis Stream publish | Stuck as `queued` in Hash + sorted set | Recovery loop resets to `pending` | ~2min |
+| Crash after claim, before Redis Stream publish | Stuck as `queued` in Hash + sorted set | Recovery loop resets to `pending` + re-publishes to stream | ~2min |
 | Crash after Redis Stream publish | All good, consumer processes | N/A | 0 |
+| Consumer delivery failure (retryable) | Status set to `failed`, added to `idx:retry` | Retry recovery loop re-enqueues after backoff delay | 2s–60s |
+| Consumer delivery failure (permanent) | Moved to DLQ | No retry — permanent failure | Immediate |
 
 ## Batch Publishing (Redis Pipeline)
 

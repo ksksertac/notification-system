@@ -56,7 +56,12 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 │                                                                              │
 │  Poll Redis schedule:pending (5s) ──→ Lua claim script ──→ PublishBatch      │
 │  Each pod claims different items via atomic Lua ZREM — no locks              │
-│  Recovery loop (30s) ──→ stuck 'queued' in idx:status → reset to 'pending'   │
+│  Recovery loop (30s):                                                        │
+│    stuck 'queued' (>2min) → reset to 'pending' + re-publish to stream        │
+│    stuck 'processing' (>2min) → reset to 'queued' + re-publish to stream     │
+│    orphaned 'pending' (>30s, instant) → set to 'queued' + publish to stream  │
+│  Retry recovery (10s):                                                       │
+│    idx:retry sorted set (score=next_retry_at) → re-enqueue when delay expires│
 └───────────────────────────────────────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────────────────────────┐
@@ -80,6 +85,23 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 
 ## Quick Start
 
+### 1. Configure Webhook Provider
+
+The system uses [webhook.site](https://webhook.site) as a mock delivery provider. Get your unique URL:
+
+1. Go to https://webhook.site — you'll get a unique UUID (e.g., `abc123-def456-...`)
+2. Copy the `.env.example` to `.env` and set your webhook UUID:
+
+```bash
+cp .env.example .env
+# Edit .env and set:
+# PROVIDER_WEBHOOK_URL=https://webhook.site/YOUR-UUID-HERE
+```
+
+All SMS, Email, and Push deliveries will be sent to this URL. You can monitor deliveries in real-time on the webhook.site dashboard.
+
+### 2. Start Services
+
 ```bash
 # Start everything — builds 4 Docker images, runs all services + observability
 docker-compose up --build
@@ -95,6 +117,43 @@ docker-compose up --build
 | http://localhost:3000 | Grafana (admin/admin) |
 | http://localhost:9091 | Prometheus |
 | http://localhost:9093 | Alertmanager |
+
+## Safety Net — Self-Healing Recovery
+
+Every notification state has an automatic recovery path. If any component crashes or a delivery fails, the system self-heals without manual intervention:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     9-Layer Safety Net                              │
+│                                                                     │
+│  Layer 1: Rate Limit Re-enqueue (500ms)                            │
+│    └─ Rate limited? → re-publish to stream after 500ms             │
+│                                                                     │
+│  Layer 2: Exponential Backoff Retry (2s–60s)                       │
+│    └─ Provider failure? → IncrementRetry → idx:retry sorted set    │
+│                                                                     │
+│  Layer 3: Retry Recovery (every 10s)                               │
+│    └─ Scheduler polls idx:retry → re-enqueues when delay expires   │
+│                                                                     │
+│  Layer 4: XAUTOCLAIM Stale Recovery (every 15s)                    │
+│    └─ Consumer claimer claims idle stream messages from dead pods   │
+│                                                                     │
+│  Layer 5: Orphaned Pending Recovery (every 30s)                    │
+│    └─ Instant notifications stuck as 'pending' > 30s → re-publish  │
+│                                                                     │
+│  Layer 6: Stuck Queued Recovery (every 30s, threshold 2min)        │
+│    └─ Notifications stuck as 'queued' → reset + re-publish         │
+│                                                                     │
+│  Layer 7: Stuck Processing Recovery (every 30s, threshold 2min)    │
+│    └─ Notifications stuck as 'processing' → reset + re-publish     │
+│                                                                     │
+│  Layer 8: Circuit Breaker (per channel, real-time)                 │
+│    └─ Provider down? → fast fail, half-open probe after 30s        │
+│                                                                     │
+│  Layer 9: Dead Letter Queue (immediate)                            │
+│    └─ Permanent failure or max retries → DLQ for manual review     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## Data Consistency & Reliability
 
@@ -130,9 +189,13 @@ POST /api/v1/notifications
 | Scenario | What happens | Recovery | Max delay |
 |----------|-------------|----------|-----------|
 | Redis down | API cannot write — client gets error | Client retries with Idempotency-Key | Immediate |
-| API pod killed before Redis publish | Notification stays `pending` in Redis | Scheduler picks up `pending` | ~30s |
-| Scheduler pod killed after status update, before Redis publish | Notification stuck as `queued` in Redis | Recovery loop resets to `pending` | ~2min |
-| Consumer pod killed mid-processing | Redis Stream message unacknowledged | XPENDING + XCLAIM recovery | ~30s |
+| API pod killed before Redis publish | Notification stays `pending` in Redis | Scheduler picks up orphaned `pending` | ~30s |
+| Scheduler pod killed after claim, before stream publish | Notification stuck as `queued` in Redis | Recovery loop resets to `pending` + re-publishes to stream | ~2min |
+| Consumer pod killed mid-processing | Redis Stream message unacknowledged | XPENDING + XCLAIM recovery (claimer goroutine) | ~15s |
+| Consumer pod killed mid-processing (status stuck) | Notification stuck as `processing` in Redis | Recovery loop resets to `queued` + re-publishes to stream | ~2min |
+| Provider temporary failure | Delivery fails with retryable error | Exponential backoff retry via `idx:retry` sorted set — scheduler re-enqueues when delay expires | 2s–60s |
+| Provider permanent failure | Delivery fails with non-retryable error | Moved to DLQ immediately | Immediate |
+| Max retries exceeded | All retry attempts exhausted | Moved to DLQ | Immediate |
 | persist:queue consumer (dbwriter) down | Notifications remain in Redis (hot store) | dbwriter catches up on restart via consumer group | Minutes |
 | PostgreSQL down | Hot path unaffected — API/consumer/scheduler use Redis only | dbwriter retries persist:queue entries on PG recovery | Minutes |
 | Redis write fails | Client gets error, nothing persisted | Client retries with Idempotency-Key | Immediate |
@@ -218,6 +281,9 @@ With buffer:     1000 requests → 2 pipeline HSETs (500 each) → 2 Redis round
 | `persist:queue` | Stream | Async persistence feed for dbwriter |
 | `notifications:high` | Stream | High-priority delivery queue |
 | `notifications:normal` | Stream | Normal-priority delivery queue |
+| `idx:retry` | Sorted Set | Retry scheduling index (score=next_retry_at as UnixNano) |
+| `cb:{channel}` | Hash | Redis-backed circuit breaker state per channel |
+| `dlq:{notification_id}` | Hash | Dead letter queue entry (failed notification + error details) |
 | `notifications:low` | Stream | Low-priority delivery queue |
 
 ## Horizontal Scaling — Race-to-Claim (No Ring Hash)
@@ -289,7 +355,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **PgBouncer**: connection multiplexing shared by dbwriter (writes) and API (cold read fallback) to PostgreSQL
 - **Race-to-Claim**: scheduler, consumer, dbwriter all scale via atomic Redis operations — no ring hash, no partition assignment, no rebalance. Lua scripts guarantee atomicity
 - **Redis Lua Scripts**: server-side atomic operations for CAS (compare-and-swap), scheduled claim, recovery, rate limiting — same guarantee as `SELECT FOR UPDATE` at Redis speed
-- **3-Layer Self-Healing**: optimistic publish keeps `pending` on failure (instant) → scheduler claims orphaned (30s) → recovery resets stuck `queued` (2min)
+- **Multi-Layer Safety Net**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
 - **Global Rate Limiting**: Redis sliding window (1000 req/s shared across all pods) protects the system from traffic bursts
 - **Weighted Polling**: prevents priority starvation (high:10, normal:5, low:2)
 - **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe
