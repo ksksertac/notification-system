@@ -1,0 +1,56 @@
+groups:
+  - name: notification_system
+    rules:
+      - alert: HighFailureRate
+        expr: rate(notifications_failed_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High notification failure rate on {{ $labels.channel }}"
+          description: "Failure rate is {{ $value | printf \"%.2f\" }}/s for channel {{ $labels.channel }}"
+
+      - alert: QueueDepthHigh
+        expr: queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue depth is high on {{ $labels.stream }}"
+          description: "Queue {{ $labels.stream }} has {{ $value }} pending messages"
+
+      - alert: DeliveryLatencyHigh
+        expr: histogram_quantile(0.95, rate(notification_delivery_duration_seconds_bucket[5m])) > 5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High delivery latency on {{ $labels.channel }}"
+          description: "p95 latency is {{ $value | printf \"%.2f\" }}s for channel {{ $labels.channel }}"
+
+      - alert: CircuitBreakerOpen
+        expr: increase(circuit_breaker_open_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker opened"
+          description: "A circuit breaker has opened in the last 5 minutes"
+
+      - alert: APIHighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error rate above 5%"
+          description: "HTTP 5xx error rate is {{ $value | printf \"%.2f\" }}%"
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus target {{ $labels.instance }} has been down for more than 1 minute"

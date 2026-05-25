@@ -1,0 +1,44 @@
+name: notification-scheduler
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "notification-scheduler/**"
+      - "shared/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "notification-scheduler/**"
+      - "shared/**"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Vet
+        working-directory: notification-scheduler
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Test
+        working-directory: notification-scheduler
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t notification-scheduler:${{ github.sha }} -f notification-scheduler/Dockerfile .

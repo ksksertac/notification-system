@@ -1,0 +1,44 @@
+name: notification-consumer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "notification-consumer/**"
+      - "shared/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "notification-consumer/**"
+      - "shared/**"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Vet
+        working-directory: notification-consumer
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Test
+        working-directory: notification-consumer
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t notification-consumer:${{ github.sha }} -f notification-consumer/Dockerfile .
