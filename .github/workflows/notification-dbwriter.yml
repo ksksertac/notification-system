@@ -20,6 +20,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: notification-dbwriter/go.sum
       - name: Vet
         working-directory: notification-dbwriter
         run: go vet ./...
@@ -31,6 +32,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: notification-dbwriter/go.sum
       - name: Test
         working-directory: notification-dbwriter
         run: go test -race -count=1 -coverprofile=coverage.out ./...

@@ -20,45 +20,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: notification-api/go.sum
       - name: Vet
         working-directory: notification-api
         run: go vet ./...
 
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: notification
-          POSTGRES_PASSWORD: notification_secret
-          POSTGRES_DB: notification_db
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: notification-api/go.sum
       - name: Test
         working-directory: notification-api
-        env:
-          DB_HOST: localhost
-          REDIS_ADDR: localhost:6379
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
   build:

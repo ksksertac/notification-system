@@ -9,6 +9,7 @@ on:
 jobs:
   sonarcloud:
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,6 +18,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: |
+            shared/go.sum
+            notification-api/go.sum
+            notification-consumer/go.sum
+            notification-scheduler/go.sum
+            notification-dbwriter/go.sum
 
       - name: Run tests with coverage (shared)
         run: |
@@ -53,7 +60,7 @@ jobs:
           done
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarqube-scan-action@v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
