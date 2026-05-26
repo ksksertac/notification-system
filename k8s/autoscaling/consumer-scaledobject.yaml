@@ -1,0 +1,34 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: notification-consumer-scaler
+  namespace: notification
+spec:
+  scaleTargetRef:
+    name: notification-consumer
+  pollingInterval: 10
+  cooldownPeriod: 30
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  triggers:
+    # High priority: aggressive scaling — 1 pod per 5 lagging messages
+    - type: redis-streams
+      metadata:
+        address: redis.notification.svc.cluster.local:6379
+        stream: notifications:high
+        consumerGroup: notification-workers
+        lagCount: "5"
+    # Normal priority: moderate scaling
+    - type: redis-streams
+      metadata:
+        address: redis.notification.svc.cluster.local:6379
+        stream: notifications:normal
+        consumerGroup: notification-workers
+        lagCount: "10"
+    # Low priority: relaxed scaling
+    - type: redis-streams
+      metadata:
+        address: redis.notification.svc.cluster.local:6379
+        stream: notifications:low
+        consumerGroup: notification-workers
+        lagCount: "20"

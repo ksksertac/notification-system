@@ -144,6 +144,10 @@ API is fully stateless — any pod handles any request. No shared state, no coor
 
 Rate limiting uses a global Redis Lua script (sliding window) — works correctly across all pods without per-pod counters.
 
+### Kubernetes — KEDA Autoscaling
+
+In the K3s deployment (`./k8s/setup.sh`), KEDA scales API replicas based on CPU utilization (threshold: 70%). Min 1, max 5 replicas. The API is a producer (writes to Redis Streams), not a consumer — so CPU-based scaling is more appropriate than queue-based scaling.
+
 ## Environment Variables
 
 | Variable | Default | Description |

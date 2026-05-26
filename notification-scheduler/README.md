@@ -148,6 +148,10 @@ The scheduler accepts an optional `MetricsRecorder` interface:
 
 See [.env.example](.env.example) for all configuration options.
 
+## Kubernetes — KEDA Autoscaling
+
+In the K3s deployment (`./k8s/setup.sh`), KEDA scales scheduler replicas based on CPU utilization (threshold: 70%). Min 1, max 3 replicas. The scheduler reads from sorted sets (not streams), so CPU-based scaling is used instead of stream-based scaling.
+
 ## Run
 
 ```bash

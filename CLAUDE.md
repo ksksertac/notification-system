@@ -20,6 +20,7 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **Security Hardening**: API key auth, WebSocket origin validation + heartbeat + connection limits, html/template for XSS safety, correlation ID validation.
 - **Documentation**: README files, architecture diagrams, and this plan document maintained throughout development.
 - **Refactoring**: Migrator moved from API to dbwriter, dead code removed, go.mod versions aligned, sentinel errors, custom Prometheus registries — all AI-guided.
+- **Kubernetes + KEDA**: Local K3s cluster via k3d, KEDA event-driven autoscaling on Redis Stream lag, priority-aware scaling thresholds, one-command setup/demo/teardown scripts.
 
 ## Key Commands Used
 

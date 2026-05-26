@@ -134,6 +134,16 @@ If a dbwriter pod crashes mid-batch, unacknowledged messages remain in the pendi
 | `dbwriter_lag_seconds` | Gauge | Time difference between newest pending event and last flushed event |
 | `dbwriter_coalesced_total` | Counter | Events merged by batch coalescing |
 
+## Kubernetes — KEDA Autoscaling
+
+In the K3s deployment (`./k8s/setup.sh`), KEDA automatically scales dbwriter replicas based on `persist:queue` Redis Stream lag:
+
+- **Lag threshold**: 15 per replica
+- **Min replicas**: 1, **Max replicas**: 8
+- **Polling interval**: 10s, **Cooldown**: 30s
+
+Each dbwriter pod creates a unique consumer name (`dbwriter-{uuid}`). Redis consumer group distributes stream messages across pods automatically. If a pod crashes, other pods reclaim its pending messages via `XAutoClaim` after 30s idle.
+
 ## Run
 
 ```bash

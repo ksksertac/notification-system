@@ -151,6 +151,18 @@ All services scale by adding pods. No ring hash, no Zookeeper, no partition reba
 - **Consumer/DBWriter**: Redis XREADGROUP auto-distributes messages
 - **API**: Stateless — any pod handles any request
 
+### Phase 10: Kubernetes — K3s + KEDA Event-Driven Autoscaling
+- [x] k3d (k3s-in-Docker) local Kubernetes cluster setup
+- [x] Kubernetes manifests for all 4 services + infrastructure (Redis, PostgreSQL, PgBouncer)
+- [x] KEDA ScaledObjects: `notification-consumer` scales on Redis Streams lag (`notifications:high/normal/low`)
+- [x] KEDA ScaledObjects: `notification-dbwriter` scales on Redis Streams lag (`persist:queue`)
+- [x] KEDA ScaledObjects: `notification-api` and `notification-scheduler` scale on CPU utilization
+- [x] Priority-aware scaling thresholds: high=5, normal=10, low=20 lag per replica
+- [x] One-command setup script (`./k8s/setup.sh`): cluster + KEDA + image build + deploy
+- [x] Demo script (`./k8s/demo.sh`): sends 500 notifications and watches pod scaling live
+- [x] Teardown script (`./k8s/teardown.sh`): cleanup cluster + Docker images
+- [x] Documentation updated: README, PLAN, loadtest README, service READMEs
+
 ## Trade-offs Accepted
 
 | Trade-off | Why |
@@ -160,3 +172,5 @@ All services scale by adding pods. No ring hash, no Zookeeper, no partition reba
 | No exactly-once delivery | At-least-once with idempotency is sufficient; exactly-once adds prohibitive complexity |
 | Webhook.site as provider | Assessment scope — real providers (Twilio, SendGrid) are plug-and-play replacements |
 | Single Redis instance | Assessment scope — production would use Redis Cluster for HA |
+| k3d for local K8s | Lightweight alternative to minikube/kind — k3s runs in Docker containers, same K8s API |
+| KEDA vs native HPA | KEDA enables event-driven scaling from Redis Streams; native HPA only supports cpu/memory |

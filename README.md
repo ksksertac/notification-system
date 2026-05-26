@@ -140,6 +140,53 @@ docker-compose up --build
 | http://localhost:9091 | Prometheus |
 | http://localhost:9093 | Alertmanager |
 
+### Kubernetes — K3s + KEDA (Event-Driven Autoscaling)
+
+Run the same services inside a real Kubernetes cluster with **KEDA** autoscaling — consumer and dbwriter pods scale automatically based on Redis Stream queue depth.
+
+**Prerequisites:** Docker, k3d, kubectl, helm (`brew install k3d helm`)
+
+```bash
+# One-command setup: k3d cluster + KEDA + all services
+./k8s/setup.sh
+
+# Watch pods scale in real time
+kubectl -n notification get pods -w
+
+# Send 500 notifications to trigger autoscaling
+./k8s/demo.sh
+
+# Tear down
+./k8s/teardown.sh
+```
+
+| Service | KEDA Trigger | Scale Metric | Min → Max |
+|---------|-------------|--------------|-----------|
+| **notification-consumer** | `redis-streams` | Stream lag on `notifications:high/normal/low` | 1 → 10 |
+| **notification-dbwriter** | `redis-streams` | Stream lag on `persist:queue` | 1 → 8 |
+| **notification-api** | `cpu` | CPU utilization > 70% | 1 → 5 |
+| **notification-scheduler** | `cpu` | CPU utilization > 70% | 1 → 3 |
+
+Consumer scaling is priority-aware — high-priority queue lag triggers more aggressive scaling (threshold: 5) than low-priority (threshold: 20).
+
+```
+Load test → API receives burst traffic
+  → notifications pile up in Redis Streams
+    → KEDA detects stream lag increase
+      → consumer pods scale 1 → 10
+        → queue drains, lag drops
+          → KEDA scales back down to 1 (cooldown: 30s)
+```
+
+**Docker Compose vs K3s + KEDA:**
+
+| | Docker Compose | K3s + KEDA |
+|---|---|---|
+| Environment | Plain Docker | Real Kubernetes (k3s-in-Docker) |
+| Scaling | Fixed replicas | Dynamic, event-driven (KEDA) |
+| Autoscaler | None | KEDA (redis-streams + cpu triggers) |
+| Production-like | No | Yes — same manifests work in cloud K8s |
+
 ## Safety Net — Self-Healing Recovery
 
 Every notification state has an automatic recovery path. If any component crashes or a delivery fails, the system self-heals without manual intervention:
@@ -347,6 +394,8 @@ Traditional (Ring Hash):     Ours (Race-to-Claim):
 | **DBWriter** | Redis `XREADGROUP` on `persist:queue` | Same as consumer — consumer group guarantees |
 | **API** | Stateless HTTP | No shared state — any pod handles any request |
 
+**KEDA Autoscaling (K3s):** In the Kubernetes deployment (`./k8s/setup.sh`), KEDA watches Redis Stream lag and automatically adjusts replica counts. Consumer and dbwriter scale on queue depth (redis-streams trigger); API and scheduler scale on CPU utilization. See [Kubernetes — K3s + KEDA](#kubernetes--k3s--keda-event-driven-autoscaling).
+
 ### Redis Lua Scripts — Why?
 
 Lua scripts run **inside Redis** (server-side), not in Go. Redis executes the entire script atomically — no other command can interleave:
@@ -457,6 +506,14 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 │   ├── alertmanager/            # Slack/Teams webhook routing
 │   ├── grafana/                 # Dashboards + datasource provisioning
 │   └── promtail/                # Docker log collection pipeline
+│
+├── k8s/                         # Kubernetes (K3s + KEDA) local deployment
+│   ├── setup.sh                 # One-command: k3d cluster + KEDA + deploy all
+│   ├── teardown.sh              # Cleanup cluster + images
+│   ├── demo.sh                  # Load test + watch autoscaling live
+│   ├── infra/                   # Redis, PostgreSQL, PgBouncer manifests
+│   ├── apps/                    # Service Deployments + ConfigMaps
+│   └── autoscaling/             # KEDA ScaledObjects (redis-streams + cpu)
 │
 ├── .github/workflows/           # Per-service CI/CD (paths filter)
 └── docker-compose.yml           # One-command setup (4 images + PgBouncer + observability)

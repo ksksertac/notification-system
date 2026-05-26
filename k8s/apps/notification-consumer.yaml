@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification-consumer-config
+  namespace: notification
+data:
+  REDIS_ADDR: "redis:6379"
+  REDIS_PASSWORD: ""
+  REDIS_DB: "0"
+  QUEUE_CONSUMER_GROUP: "notification-workers"
+  QUEUE_WEIGHT_HIGH: "10"
+  QUEUE_WEIGHT_NORMAL: "5"
+  QUEUE_WEIGHT_LOW: "2"
+  QUEUE_WORKER_COUNT: "5"
+  QUEUE_CLAIM_MIN_IDLE: "30s"
+  QUEUE_CLAIM_INTERVAL: "15s"
+  RATE_LIMIT_PER_SECOND: "100"
+  CB_FAILURE_THRESHOLD: "5"
+  CB_OPEN_DURATION: "30s"
+  CB_HALF_OPEN_MAX_REQUESTS: "1"
+  RETRY_MAX_ATTEMPTS: "5"
+  RETRY_BASE_DELAY: "2s"
+  RETRY_MAX_DELAY: "60s"
+  WEBHOOK_URL: "https://webhook.site/test"
+  PROVIDER_TIMEOUT: "10s"
+  LOG_LEVEL: "info"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-consumer
+  namespace: notification
+  labels:
+    app: notification-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-consumer
+  template:
+    metadata:
+      labels:
+        app: notification-consumer
+    spec:
+      containers:
+        - name: notification-consumer
+          image: notification-consumer:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: notification-consumer-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

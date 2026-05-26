@@ -115,6 +115,25 @@ Pod B dies? → msg4, msg6 unacknowledged → XPENDING+XCLAIM → Pod A takes ov
 New Pod C? → starts receiving messages immediately, no rebalance
 ```
 
+## Kubernetes — KEDA Autoscaling
+
+In the K3s deployment (`./k8s/setup.sh`), KEDA automatically scales consumer replicas based on Redis Stream lag:
+
+| Stream | Lag Threshold | Behavior |
+|--------|--------------|----------|
+| `notifications:high` | 5 per replica | Aggressive scaling for high-priority messages |
+| `notifications:normal` | 10 per replica | Moderate scaling |
+| `notifications:low` | 20 per replica | Relaxed scaling |
+
+- **Min replicas**: 1, **Max replicas**: 10
+- **Polling interval**: 10s, **Cooldown**: 30s
+- KEDA creates an HPA backed by external metrics from Redis Streams consumer group lag
+
+```
+Burst traffic → queue lag increases → KEDA scales 1 → 10 pods
+  → more consumers drain the queue → lag drops → KEDA scales back to 1
+```
+
 ## Run
 
 ```bash
