@@ -1,0 +1,791 @@
+{
+  "info": {
+    "name": "Notification System API",
+    "description": "Full API collection for the Notification System microservice.\n\nBase URL: http://localhost:8080\n\nFeatures:\n- Create single & batch notifications (email, sms, push)\n- Idempotency via Idempotency-Key header\n- Cancel pending/queued notifications\n- List with cursor-based pagination & filters\n- Health check & Prometheus metrics\n- WebSocket real-time updates",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "notificationId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "batchId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Monitoring",
+      "description": "System health checks, metrics, and observability endpoints.",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Returns health status of Redis (primary data store) and PostgreSQL (cold storage).\n\nResponse:\n- 200: All components healthy\n- 503: One or more components unhealthy"
+          },
+          "response": [
+            {
+              "name": "Healthy",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"status\": \"healthy\",\n  \"components\": {\n    \"redis\": \"healthy\",\n    \"postgres\": \"healthy\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Prometheus Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["metrics"]
+            },
+            "description": "Returns Prometheus-format metrics.\n\nIncludes:\n- notifications_created_total\n- notifications_delivered_total\n- http_request_duration_seconds\n- http_requests_total"
+          },
+          "response": []
+        },
+        {
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/swagger/index.html",
+              "host": ["{{baseUrl}}"],
+              "path": ["swagger", "index.html"]
+            },
+            "description": "Opens the Swagger UI for interactive API documentation. Open in browser."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Notifications - Create",
+      "description": "Endpoints for creating single and batch notifications.",
+      "item": [
+        {
+          "name": "Create Email Notification",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', jsonData.data.id);",
+                  "    pm.test('Notification created successfully', function () {",
+                  "        pm.expect(jsonData.success).to.be.true;",
+                  "        pm.expect(jsonData.data.status).to.eql('queued');",
+                  "        pm.expect(jsonData.data.channel).to.eql('email');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"Hello! This is a test email notification.\",\n  \"priority\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Create a single email notification.\n\nPriority levels: high, normal, low\nChannels: email, sms, push\n\nThe notification ID is automatically saved to the `notificationId` collection variable."
+          },
+          "response": [
+            {
+              "name": "Success",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"uuid-here\",\n    \"recipient\": \"user@example.com\",\n    \"channel\": \"email\",\n    \"content\": \"Hello! This is a test email notification.\",\n    \"priority\": \"high\",\n    \"status\": \"queued\",\n    \"retry_count\": 0,\n    \"created_at\": \"2026-05-26T12:00:00Z\",\n    \"updated_at\": \"2026-05-26T12:00:00Z\"\n  },\n  \"correlation_id\": \"uuid\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Create SMS Notification",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', jsonData.data.id);",
+                  "    pm.test('SMS notification created', function () {",
+                  "        pm.expect(jsonData.success).to.be.true;",
+                  "        pm.expect(jsonData.data.channel).to.eql('sms');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"Your verification code is 123456\",\n  \"priority\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Create a single SMS notification.\n\nRecipient must be in E.164 format: +[country code][number]\nExamples: +905551234567, +12125551234\n\nMax content length for SMS: 160 characters."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Push Notification",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', jsonData.data.id);",
+                  "    pm.test('Push notification created', function () {",
+                  "        pm.expect(jsonData.success).to.be.true;",
+                  "        pm.expect(jsonData.data.channel).to.eql('push');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"fcm-device-token-abc123xyz\",\n  \"channel\": \"push\",\n  \"content\": \"You have a new message!\",\n  \"priority\": \"normal\",\n  \"metadata\": {\n    \"title\": \"New Message\",\n    \"badge\": 1\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Create a push notification.\n\nRecipient must be a device token (min 10 characters).\nMetadata field can carry extra payload (title, badge, deep link, etc.)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Scheduled Notification",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', jsonData.data.id);",
+                  "    pm.test('Scheduled notification created', function () {",
+                  "        pm.expect(jsonData.success).to.be.true;",
+                  "        pm.expect(jsonData.data.scheduled_at).to.not.be.null;",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"This is a scheduled notification\",\n  \"priority\": \"normal\",\n  \"scheduled_at\": \"2026-05-27T10:00:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Create a notification scheduled for future delivery.\n\nThe scheduler service will pick it up at the specified time.\nscheduled_at must be in the future (RFC3339 format).\n\nUseful for: reminders, marketing campaigns, time-zone aware delivery."
+          },
+          "response": []
+        },
+        {
+          "name": "Create with Idempotency Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', jsonData.data.id);",
+                  "    pm.test('Idempotency key is set', function () {",
+                  "        pm.expect(jsonData.data.idempotency_key).to.eql('unique-key-123');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "unique-key-123",
+                "description": "Prevents duplicate notifications. Same key always returns the same notification."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"This notification is idempotent\",\n  \"priority\": \"normal\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Create a notification with an idempotency key.\n\nSending the same request with the same Idempotency-Key header will return the existing notification instead of creating a duplicate.\n\nUse case: Safe retries in case of network failures or timeouts.\n\nTry sending this request twice — you'll get the same notification ID both times."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Batch Notifications",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('batchId', jsonData.data.batch_id);",
+                  "    pm.test('Batch created successfully', function () {",
+                  "        pm.expect(jsonData.success).to.be.true;",
+                  "        pm.expect(jsonData.data.total).to.eql(3);",
+                  "        pm.expect(jsonData.data.notifications).to.have.lengthOf(3);",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notifications\": [\n    {\n      \"recipient\": \"user1@example.com\",\n      \"channel\": \"email\",\n      \"content\": \"Batch notification 1\",\n      \"priority\": \"high\"\n    },\n    {\n      \"recipient\": \"user2@example.com\",\n      \"channel\": \"email\",\n      \"content\": \"Batch notification 2\",\n      \"priority\": \"normal\"\n    },\n    {\n      \"recipient\": \"+905551234567\",\n      \"channel\": \"sms\",\n      \"content\": \"Batch SMS\",\n      \"priority\": \"low\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "batch"]
+            },
+            "description": "Create up to 1000 notifications in a single request.\n\nAll notifications in the batch get the same batch_id.\nEach notification is validated independently — if one fails validation, the entire batch is rejected.\n\nThe batch_id is automatically saved to the `batchId` collection variable."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Notifications - Query",
+      "description": "Endpoints for retrieving and listing notifications.",
+      "item": [
+        {
+          "name": "Get Notification by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/{{notificationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "{{notificationId}}"]
+            },
+            "description": "Retrieve a single notification by its UUID.\n\nUses the `notificationId` variable (auto-set by Create requests).\n\nReturns full notification details including current status, retry count, and error message if failed."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Batch by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/batch/{{batchId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "batch", "{{batchId}}"]
+            },
+            "description": "Retrieve all notifications belonging to a batch.\n\nUses the `batchId` variable (auto-set by Create Batch request)."
+          },
+          "response": []
+        },
+        {
+          "name": "List All Notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Page size (1-100, default 20)"
+                }
+              ]
+            },
+            "description": "List all notifications with default pagination (20 per page).\n\nResponse includes:\n- notifications: array of notification objects\n- next_cursor: UUID for next page (null if last page)\n- total: total count of matching notifications"
+          },
+          "response": []
+        },
+        {
+          "name": "List by Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?status=delivered&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "delivered",
+                  "description": "Filter: pending, queued, processing, delivered, failed, cancelled"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "List notifications filtered by status.\n\nAvailable statuses:\n- pending: created, waiting for scheduler\n- queued: in delivery queue\n- processing: being delivered\n- delivered: successfully sent\n- failed: delivery failed after all retries (moved to DLQ)\n- cancelled: manually cancelled"
+          },
+          "response": []
+        },
+        {
+          "name": "List by Channel",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?channel=email&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"],
+              "query": [
+                {
+                  "key": "channel",
+                  "value": "email",
+                  "description": "Filter: email, sms, push"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "List notifications filtered by delivery channel.\n\nChannels: email, sms, push"
+          },
+          "response": []
+        },
+        {
+          "name": "List by Date Range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?start_date=2026-05-26T00:00:00Z&end_date=2026-05-27T00:00:00Z&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2026-05-26T00:00:00Z",
+                  "description": "Start date (RFC3339)"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2026-05-27T00:00:00Z",
+                  "description": "End date (RFC3339)"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "List notifications within a date range.\n\nDates must be in RFC3339 format.\nCan be combined with status and channel filters."
+          },
+          "response": []
+        },
+        {
+          "name": "List with Cursor Pagination",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?limit=5&cursor={{notificationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{notificationId}}",
+                  "description": "Cursor from previous response's next_cursor field"
+                }
+              ]
+            },
+            "description": "Paginate through notifications using cursor-based pagination.\n\nHow it works:\n1. First request: omit cursor, get first page\n2. Use next_cursor from response as cursor for next page\n3. When next_cursor is null, you've reached the last page\n\nAdvantage over offset pagination: consistent results even when new notifications are created between pages."
+          },
+          "response": []
+        },
+        {
+          "name": "List with Combined Filters",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?status=failed&channel=sms&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "failed"
+                },
+                {
+                  "key": "channel",
+                  "value": "sms"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Combine multiple filters: status + channel + date range.\n\nUseful for debugging: e.g., find all failed SMS notifications."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Notifications - Actions",
+      "description": "Actions that can be performed on existing notifications.",
+      "item": [
+        {
+          "name": "Cancel Notification",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/{{notificationId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "{{notificationId}}", "cancel"]
+            },
+            "description": "Cancel a pending or queued notification before delivery.\n\nOnly notifications in 'pending' or 'queued' status can be cancelled.\n\nResponses:\n- 200: Successfully cancelled\n- 404: Notification not found\n- 409: Cannot cancel (already delivered, failed, or cancelled)"
+          },
+          "response": [
+            {
+              "name": "Success",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"status\": \"cancelled\"\n  },\n  \"correlation_id\": \"uuid\"\n}"
+            },
+            {
+              "name": "Conflict - Already Delivered",
+              "status": "Conflict",
+              "code": 409,
+              "body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"CONFLICT\",\n    \"message\": \"conflict: cannot cancel notification in delivered status\"\n  },\n  \"correlation_id\": \"uuid\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Validation & Error Cases",
+      "description": "Requests that demonstrate validation rules and error handling.",
+      "item": [
+        {
+          "name": "Invalid Email Format",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"not-an-email\",\n  \"channel\": \"email\",\n  \"content\": \"test\",\n  \"priority\": \"normal\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Demonstrates email validation. Expected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Invalid Phone Format (SMS)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"05551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"test\",\n  \"priority\": \"normal\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "SMS requires E.164 format (+905551234567). Without the + prefix, validation fails.\n\nExpected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Invalid Channel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"whatsapp\",\n  \"content\": \"test\",\n  \"priority\": \"normal\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Only sms, email, and push channels are supported.\n\nExpected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Invalid Priority",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"test\",\n  \"priority\": \"urgent\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Only high, normal, and low priorities are supported.\n\nExpected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Missing Required Fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"email\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "Missing recipient and content (both required).\n\nExpected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Scheduled in the Past",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"past date test\",\n  \"priority\": \"normal\",\n  \"scheduled_at\": \"2020-01-01T00:00:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications"]
+            },
+            "description": "scheduled_at must be in the future.\n\nExpected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Empty Batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notifications\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "batch"]
+            },
+            "description": "Batch must contain at least 1 notification.\n\nExpected: 400 VALIDATION_ERROR."
+          },
+          "response": []
+        },
+        {
+          "name": "Invalid Notification ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/not-a-uuid",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "not-a-uuid"]
+            },
+            "description": "Notification ID must be a valid UUID.\n\nExpected: 400 INVALID_ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Non-existent Notification",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/00000000-0000-0000-0000-000000000000",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "00000000-0000-0000-0000-000000000000"]
+            },
+            "description": "Requesting a notification that doesn't exist.\n\nExpected: 404 NOT_FOUND."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "WebSocket",
+      "description": "Real-time notification updates via WebSocket.",
+      "item": [
+        {
+          "name": "WebSocket Connection",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Connection",
+                "value": "Upgrade"
+              },
+              {
+                "key": "Upgrade",
+                "value": "websocket"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ws",
+              "host": ["{{baseUrl}}"],
+              "path": ["ws"]
+            },
+            "description": "WebSocket endpoint for real-time notification status updates.\n\nNote: Postman has limited WebSocket support. For full testing, use:\n- Browser DevTools: new WebSocket('ws://localhost:8080/ws')\n- wscat: wscat -c ws://localhost:8080/ws\n- Postman WebSocket tab (beta)\n\nEvents received:\n- notification.created\n- notification.status_changed\n- notification.delivered\n- notification.failed"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
