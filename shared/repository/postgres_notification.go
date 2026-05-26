@@ -28,7 +28,7 @@ func (r *postgresNotificationRepo) Create(ctx context.Context, n *domain.Notific
 
 	_, err := r.db.ExecContext(ctx, query,
 		n.ID, n.IdempotencyKey, n.BatchID, n.Recipient, n.Channel, n.Content,
-		n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, n.Metadata,
+		n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, string(n.Metadata),
 		n.CreatedAt, n.UpdatedAt,
 	)
 	return err
@@ -57,7 +57,7 @@ func (r *postgresNotificationRepo) CreateBatch(ctx context.Context, notification
 		))
 		valueArgs = append(valueArgs,
 			n.ID, n.IdempotencyKey, n.BatchID, n.Recipient, n.Channel, n.Content,
-			n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, n.Metadata,
+			n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, string(n.Metadata),
 			n.CreatedAt, n.UpdatedAt,
 		)
 	}

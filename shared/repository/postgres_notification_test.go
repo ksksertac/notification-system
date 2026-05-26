@@ -87,7 +87,7 @@ func TestPostgresCreate(t *testing.T) {
 			`INSERT INTO notifications (id, idempotency_key, batch_id, recipient, channel, content, priority, status, max_retries, scheduled_at, metadata, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`)).
 			WithArgs(n.ID, n.IdempotencyKey, n.BatchID, n.Recipient, n.Channel, n.Content,
-				n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, n.Metadata,
+				n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, string(n.Metadata),
 				n.CreatedAt, n.UpdatedAt).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -108,7 +108,7 @@ func TestPostgresCreate(t *testing.T) {
 		mock.ExpectExec(regexp.QuoteMeta(
 			`INSERT INTO notifications`)).
 			WithArgs(n.ID, n.IdempotencyKey, n.BatchID, n.Recipient, n.Channel, n.Content,
-				n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, n.Metadata,
+				n.Priority, n.Status, n.MaxRetries, n.ScheduledAt, string(n.Metadata),
 				n.CreatedAt, n.UpdatedAt).
 			WillReturnError(errors.New("connection refused"))
 
