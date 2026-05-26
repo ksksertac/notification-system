@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"text/template"
+	"html/template"
+	"sync"
 )
 
 type Engine interface {
 	Render(tmpl string, metadata []byte) (string, error)
 }
 
-type goTemplateEngine struct{}
+type goTemplateEngine struct {
+	cache sync.Map // map[string]*template.Template
+}
 
 func NewEngine() Engine {
 	return &goTemplateEngine{}
@@ -22,7 +25,7 @@ func (e *goTemplateEngine) Render(tmpl string, metadata []byte) (string, error) 
 		return tmpl, nil
 	}
 
-	t, err := template.New("notification").Parse(tmpl)
+	t, err := e.getOrParse(tmpl)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
@@ -38,4 +41,18 @@ func (e *goTemplateEngine) Render(tmpl string, metadata []byte) (string, error) 
 	}
 
 	return buf.String(), nil
+}
+
+func (e *goTemplateEngine) getOrParse(tmpl string) (*template.Template, error) {
+	if cached, ok := e.cache.Load(tmpl); ok {
+		return cached.(*template.Template), nil
+	}
+
+	t, err := template.New("notification").Parse(tmpl)
+	if err != nil {
+		return nil, err
+	}
+
+	e.cache.Store(tmpl, t)
+	return t, nil
 }

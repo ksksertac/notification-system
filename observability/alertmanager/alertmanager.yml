@@ -16,10 +16,10 @@ route:
 receivers:
   - name: "default"
     webhook_configs:
-      - url: "${ALERTMANAGER_WEBHOOK_URL}"
+      - url: "http://notification-api:8080/api/v1/webhooks/alerts"
         send_resolved: true
 
   - name: "critical"
     webhook_configs:
-      - url: "${ALERTMANAGER_WEBHOOK_URL}"
+      - url: "http://notification-api:8080/api/v1/webhooks/alerts"
         send_resolved: true

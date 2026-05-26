@@ -4,16 +4,21 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/sertacyildirim/notification-system/shared/domain"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = 30 * time.Second
+	defaultMaxConn = 1000
+)
 
 type StatusUpdate struct {
 	NotificationID uuid.UUID     `json:"notification_id"`
@@ -26,19 +31,65 @@ type client struct {
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[*client]bool
-	logger  *slog.Logger
+	mu             sync.RWMutex
+	clients        map[*client]bool
+	logger         *slog.Logger
+	maxClients     int
+	allowedOrigins []string
 }
 
-func NewHub(logger *slog.Logger) *Hub {
+func NewHub(logger *slog.Logger, allowedOrigins []string) *Hub {
+	maxConn := defaultMaxConn
 	return &Hub{
-		clients: make(map[*client]bool),
-		logger:  logger,
+		clients:        make(map[*client]bool),
+		logger:         logger,
+		maxClients:     maxConn,
+		allowedOrigins: allowedOrigins,
 	}
 }
 
+func (h *Hub) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // non-browser clients
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+
+	// Always allow localhost
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+
+	for _, allowed := range h.allowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
+	// Check connection limit
+	h.mu.RLock()
+	count := len(h.clients)
+	h.mu.RUnlock()
+
+	if count >= h.maxClients {
+		h.logger.Warn("websocket connection rejected: max clients reached", "max", h.maxClients)
+		http.Error(w, "too many connections", http.StatusServiceUnavailable)
+		return
+	}
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: h.checkOrigin,
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error("websocket upgrade failed", "error", err)
@@ -54,7 +105,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	h.clients[c] = true
 	h.mu.Unlock()
 
-	h.logger.Debug("websocket client connected", "remote_addr", conn.RemoteAddr())
+	h.logger.Debug("websocket client connected", "remote_addr", conn.RemoteAddr(), "clients", count+1)
 
 	go h.writePump(c)
 	go h.readPump(c)
@@ -65,6 +116,12 @@ func (h *Hub) readPump(c *client) {
 		h.removeClient(c)
 	}()
 
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	for {
 		if _, _, err := c.conn.ReadMessage(); err != nil {
 			break
@@ -73,13 +130,28 @@ func (h *Hub) readPump(c *client) {
 }
 
 func (h *Hub) writePump(c *client) {
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
+		ticker.Stop()
 		c.conn.Close()
 	}()
 
-	for msg := range c.send {
-		if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			return
+	for {
+		select {
+		case msg, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }

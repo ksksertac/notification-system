@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"log/slog"
 	"net/http"
 
@@ -23,6 +24,8 @@ func NewRouter(
 	metrics *handler.MetricsCollector,
 	wsHub *ws.Hub,
 	logger *slog.Logger,
+	apiKey string,
+	db *sql.DB,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -33,14 +36,20 @@ func NewRouter(
 	r.Use(middleware.MaxBodySize(2 << 20))
 
 	nh := handler.NewNotificationHandler(svc)
-	hh := handler.NewHealthHandler(redisClient)
+	hh := handler.NewHealthHandler(redisClient, db)
 
 	r.Get("/health", hh.Health)
 	r.Get("/metrics", metrics.Metrics)
 	r.Get("/ws", wsHub.HandleWS)
+	r.Get("/swagger", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/swagger/index.html", http.StatusMovedPermanently)
+	})
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		if apiKey != "" {
+			r.Use(middleware.APIKeyAuth(apiKey))
+		}
 		r.Post("/notifications", nh.Create)
 		r.Post("/notifications/batch", nh.CreateBatch)
 		r.Get("/notifications", nh.List)

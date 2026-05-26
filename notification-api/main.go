@@ -80,10 +80,16 @@ func run() error {
 
 	svc := service.NewNotificationService(repo, publisher, writeBuffer, cfg.Retry.MaxAttempts, logger)
 
-	wsHub := ws.NewHub(logger)
+	// WebSocket allowed origins from environment (comma-separated), e.g. "https://example.com,https://app.example.com"
+	var wsAllowedOrigins []string
+	if origins := os.Getenv("WS_ALLOWED_ORIGINS"); origins != "" {
+		wsAllowedOrigins = strings.Split(origins, ",")
+	}
+	wsHub := ws.NewHub(logger, wsAllowedOrigins)
 	metrics := handler.NewMetricsCollector(consumer)
 
-	router := NewRouter(svc, redisClient, consumer, metrics, wsHub, logger)
+	apiKey := os.Getenv("API_KEY")
+	router := NewRouter(svc, redisClient, consumer, metrics, wsHub, logger, apiKey, db.DB)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
