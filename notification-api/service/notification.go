@@ -102,6 +102,12 @@ func (s *notificationService) Create(ctx context.Context, req domain.CreateNotif
 
 	if n.IdempotencyKey != nil {
 		if err := s.repo.Create(ctx, n); err != nil {
+			if errors.Is(err, repository.ErrIdempotencyConflict) {
+				existing, getErr := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
+				if getErr == nil && existing != nil {
+					return existing, nil
+				}
+			}
 			return nil, fmt.Errorf("creating notification: %w", err)
 		}
 		if n.ScheduledAt == nil {

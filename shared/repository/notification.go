@@ -2,11 +2,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/sertacyildirim/notification-system/shared/domain"
 )
+
+var ErrIdempotencyConflict = errors.New("idempotency key already exists")
 
 type NotificationRepository interface {
 	Create(ctx context.Context, n *domain.Notification) error

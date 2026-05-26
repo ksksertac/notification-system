@@ -171,16 +171,25 @@ func mapToNotification(vals map[string]string) (*domain.Notification, error) {
 //        [6..N]=field/value pairs for HSET
 var createScript = redis.NewScript(`
 local key = KEYS[1]
-local exists = redis.call('EXISTS', key)
-if exists == 1 then
-    return redis.error_reply('notification already exists')
-end
 
 local member = ARGV[1]
 local score = tonumber(ARGV[2])
 local idemTTL = tonumber(ARGV[3])
 local schedScore = tonumber(ARGV[4])
 local persistEvt = ARGV[5]
+
+-- Atomic idempotency check before any writes
+if KEYS[6] ~= '' and idemTTL > 0 then
+    local existing = redis.call('GET', KEYS[6])
+    if existing then
+        return 'IDEMPOTENCY_HIT:' .. existing
+    end
+end
+
+local exists = redis.call('EXISTS', key)
+if exists == 1 then
+    return redis.error_reply('notification already exists')
+end
 
 -- Write hash fields
 for i = 6, #ARGV, 2 do
@@ -271,9 +280,13 @@ func (r *redisNotificationRepo) Create(ctx context.Context, n *domain.Notificati
 		args = append(args, k, v)
 	}
 
-	_, err = createScript.Run(ctx, r.client, keys, args...).Result()
+	result, err := createScript.Run(ctx, r.client, keys, args...).Result()
 	if err != nil {
 		return fmt.Errorf("create notification: %w", err)
+	}
+
+	if str, ok := result.(string); ok && strings.HasPrefix(str, "IDEMPOTENCY_HIT:") {
+		return ErrIdempotencyConflict
 	}
 
 	return nil
