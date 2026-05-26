@@ -432,7 +432,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Go 1.24+ |
+| Language | Go 1.25+ |
 | HTTP | Chi router |
 | Primary Data Store | Redis (Hashes, Sorted Sets, Streams, Sets) |
 | Cold Storage | PostgreSQL 16 + PgBouncer (dbwriter only) |

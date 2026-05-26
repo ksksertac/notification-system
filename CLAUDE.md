@@ -47,7 +47,7 @@ claude "move migrator from API to dbwriter"
 
 ## Project Conventions
 
-- Go 1.24, Chi router, go-redis/v9
+- Go 1.25, Chi router, go-redis/v9
 - All services share code via `shared/` module with `replace` directive
 - Redis is the primary data store; PostgreSQL is cold storage only
 - Every Redis write publishes to `persist:queue` for async PostgreSQL persistence

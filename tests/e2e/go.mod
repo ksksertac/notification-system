@@ -1,6 +1,6 @@
 module github.com/sertacyildirim/notification-system/tests/e2e
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0

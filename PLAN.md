@@ -81,7 +81,7 @@ Redis handles all hot-path operations (writes, status updates, lookups for last 
 - [x] Code review: identified 35 issues across all services
 - [x] Fixed critical bugs: createScript atomicity, pipe.Exec error handling, unused Lua params
 - [x] Removed dead code: unused functions, stale migrator in API
-- [x] Aligned Go versions (1.24) across go.mod, Dockerfiles, CI workflows
+- [x] Aligned Go versions (1.25) across go.mod, Dockerfiles, CI workflows
 - [x] Documentation pass: all READMEs updated to match actual implementation
 
 ### Phase 8: Testing & Quality
