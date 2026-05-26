@@ -18,3 +18,11 @@ scrape_configs:
   - job_name: "notification-consumer"
     static_configs:
       - targets: ["notification-consumer:9090"]
+
+  - job_name: "notification-scheduler"
+    static_configs:
+      - targets: ["notification-scheduler:9091"]
+
+  - job_name: "notification-dbwriter"
+    static_configs:
+      - targets: ["notification-dbwriter:9092"]

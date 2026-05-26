@@ -59,6 +59,8 @@ services:
       - notification-api/.env.example
     environment:
       DB_HOST: pgbouncer
+      API_KEY: changeme-notification-secret
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -79,6 +81,8 @@ services:
       - "9090"
     env_file:
       - notification-consumer/.env.example
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       redis:
         condition: service_healthy
@@ -101,6 +105,8 @@ services:
       - "9091"
     env_file:
       - notification-scheduler/.env.example
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       redis:
         condition: service_healthy
@@ -125,6 +131,7 @@ services:
       - notification-dbwriter/.env.example
     environment:
       DB_HOST: pgbouncer
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -141,10 +148,19 @@ services:
     deploy:
       replicas: 2
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
   prometheus:
     image: prom/prometheus:v2.53.0
     ports:
-      - "9091:9090"
+      - "9094:9090"
     volumes:
       - ./observability/prometheus:/etc/prometheus
       - prometheus_data:/prometheus
