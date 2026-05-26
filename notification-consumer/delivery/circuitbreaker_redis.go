@@ -66,7 +66,8 @@ return 0
 `)
 
 func (cb *RedisCircuitBreaker) Allow() bool {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	nowMs := time.Now().UnixMilli()
 	openDurationMs := cb.openDuration.Milliseconds()
 
@@ -97,7 +98,8 @@ return 0
 `)
 
 func (cb *RedisCircuitBreaker) RecordSuccess() {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	_ = cbRecordSuccessScript.Run(ctx, cb.client, []string{cb.key}).Err()
 }
 
@@ -130,7 +132,8 @@ return failures
 `)
 
 func (cb *RedisCircuitBreaker) RecordFailure() {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	nowMs := time.Now().UnixMilli()
 	_ = cbRecordFailureScript.Run(ctx, cb.client, []string{cb.key},
 		cb.threshold, nowMs,
@@ -147,7 +150,8 @@ return state
 `)
 
 func (cb *RedisCircuitBreaker) State() CircuitState {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	result, err := cbStateScript.Run(ctx, cb.client, []string{cb.key}).Text()
 	if err != nil {
 		return StateClosed

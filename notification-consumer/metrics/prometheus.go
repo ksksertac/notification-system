@@ -9,6 +9,7 @@ import (
 )
 
 type PrometheusRecorder struct {
+	registry        *prometheus.Registry
 	deliveryTotal   *prometheus.CounterVec
 	failureTotal    *prometheus.CounterVec
 	deliveryLatency *prometheus.HistogramVec
@@ -17,7 +18,13 @@ type PrometheusRecorder struct {
 }
 
 func NewPrometheusRecorder() *PrometheusRecorder {
+	reg := prometheus.NewRegistry()
+	// Include default Go runtime and process metrics
+	reg.MustRegister(prometheus.NewGoCollector())
+	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+
 	m := &PrometheusRecorder{
+		registry: reg,
 		deliveryTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "notifications_delivered_total",
 			Help: "Total notifications delivered successfully",
@@ -41,7 +48,7 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 		}),
 	}
 
-	prometheus.MustRegister(m.deliveryTotal, m.failureTotal, m.deliveryLatency, m.rateLimitHits, m.cbOpenTotal)
+	reg.MustRegister(m.deliveryTotal, m.failureTotal, m.deliveryLatency, m.rateLimitHits, m.cbOpenTotal)
 	return m
 }
 
@@ -63,5 +70,5 @@ func (m *PrometheusRecorder) RecordCircuitBreakerOpen() {
 }
 
 func (m *PrometheusRecorder) Handler() http.Handler {
-	return promhttp.Handler()
+	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }

@@ -11,15 +11,22 @@ import (
 
 type MetricsCollector struct {
 	consumer queue.Consumer
+	registry *prometheus.Registry
 
-	queueDepth *prometheus.GaugeVec
-	httpTotal  *prometheus.CounterVec
+	queueDepth  *prometheus.GaugeVec
+	httpTotal   *prometheus.CounterVec
 	httpLatency *prometheus.HistogramVec
 }
 
 func NewMetricsCollector(consumer queue.Consumer) *MetricsCollector {
+	reg := prometheus.NewRegistry()
+	// Include default Go runtime and process metrics
+	reg.MustRegister(prometheus.NewGoCollector())
+	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+
 	m := &MetricsCollector{
 		consumer: consumer,
+		registry: reg,
 		queueDepth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "queue_depth",
 			Help: "Current number of messages in each priority stream",
@@ -35,14 +42,14 @@ func NewMetricsCollector(consumer queue.Consumer) *MetricsCollector {
 		}, []string{"method", "path"}),
 	}
 
-	prometheus.MustRegister(m.queueDepth, m.httpTotal, m.httpLatency)
+	reg.MustRegister(m.queueDepth, m.httpTotal, m.httpLatency)
 
 	return m
 }
 
 func (m *MetricsCollector) Metrics(w http.ResponseWriter, r *http.Request) {
 	m.updateQueueDepths(r.Context())
-	promhttp.Handler().ServeHTTP(w, r)
+	promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
 }
 
 func (m *MetricsCollector) RecordHTTP(method, path, status string, durationSeconds float64) {

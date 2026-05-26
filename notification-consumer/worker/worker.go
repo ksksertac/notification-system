@@ -171,7 +171,12 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		return
 	}
 
-	wp.repo.UpdateStatus(ctx, msg.NotificationID, n.Status, domain.StatusProcessing)
+	updated, err := wp.repo.UpdateStatus(ctx, msg.NotificationID, n.Status, domain.StatusProcessing)
+	if err != nil || !updated {
+		logger.Warn("failed to transition to processing, skipping", "error", err, "updated", updated)
+		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
+		return
+	}
 	if wp.broadcaster != nil {
 		wp.broadcaster.Broadcast(msg.NotificationID, domain.StatusProcessing)
 	}
@@ -214,14 +219,13 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 
 	result, sendErr := wp.provider.Send(ctx, msg.Recipient, string(msg.Channel), content)
 
-	wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
-
 	if sendErr != nil {
 		cb.RecordFailure()
 		if wp.metrics != nil {
 			wp.metrics.RecordFailure(string(msg.Channel))
 		}
 		wp.handleFailure(ctx, n, sendErr, result, logger)
+		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
 
@@ -239,6 +243,8 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		wp.broadcaster.Broadcast(msg.NotificationID, domain.StatusDelivered)
 	}
 
+	wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
+
 	logger.Info("notification delivered", "provider_msg_id", providerID, "latency_ms", latency.Milliseconds())
 }
 
@@ -247,7 +253,9 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 
 	if result != nil && !result.Retryable {
 		logger.Error("permanent failure, moving to DLQ", "error", errMsg)
-		wp.repo.MoveToDLQ(ctx, n, errMsg)
+		if err := wp.repo.MoveToDLQ(ctx, n, errMsg); err != nil {
+			logger.Error("failed to move notification to DLQ", "error", err)
+		}
 		if wp.broadcaster != nil {
 			wp.broadcaster.Broadcast(n.ID, domain.StatusFailed)
 		}
@@ -256,7 +264,9 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 
 	if !wp.retry.ShouldRetry(n.RetryCount+1, wp.cfg.MaxRetries) {
 		logger.Error("max retries exceeded, moving to DLQ", "error", errMsg, "retry_count", n.RetryCount)
-		wp.repo.MoveToDLQ(ctx, n, errMsg)
+		if err := wp.repo.MoveToDLQ(ctx, n, errMsg); err != nil {
+			logger.Error("failed to move notification to DLQ", "error", err)
+		}
 		if wp.broadcaster != nil {
 			wp.broadcaster.Broadcast(n.ID, domain.StatusFailed)
 		}
@@ -266,15 +276,29 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 	delay := wp.retry.NextDelay(n.RetryCount + 1)
 	nextRetry := time.Now().Add(delay)
 
-	wp.repo.IncrementRetry(ctx, n.ID, nextRetry, errMsg)
+	if err := wp.repo.IncrementRetry(ctx, n.ID, nextRetry, errMsg); err != nil {
+		logger.Error("failed to increment retry count", "error", err)
+	}
 
 	logger.Warn("retry scheduled via persistence", "retry_count", n.RetryCount+1, "next_retry_at", nextRetry, "error", errMsg)
 }
 
 func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification) {
+	wp.wg.Add(1)
 	go func() {
-		time.Sleep(500 * time.Millisecond)
-		wp.publisher.Publish(context.Background(), n)
+		defer wp.wg.Done()
+
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+		}
+
+		publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := wp.publisher.Publish(publishCtx, n); err != nil {
+			wp.logger.Error("failed to re-enqueue notification", "notification_id", n.ID, "error", err)
+		}
 	}()
 }
 

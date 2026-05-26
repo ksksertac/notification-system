@@ -398,10 +398,10 @@ func TestList_RoutesToColdWhenStartDateOlderThanOneHour(t *testing.T) {
 	}
 }
 
-func TestList_RoutesToColdWhenStartDateIsNil(t *testing.T) {
+func TestList_RoutesToHotWhenStartDateIsNil(t *testing.T) {
 	expected := []*domain.Notification{newTestNotification()}
-	hot := &mockNotificationRepo{name: "hot"}
-	cold := &mockNotificationRepo{name: "cold", listResult: expected, listTotal: 10}
+	hot := &mockNotificationRepo{name: "hot", listResult: expected, listTotal: 10}
+	cold := &mockNotificationRepo{name: "cold"}
 
 	repo := NewTieredNotificationRepo(hot, cold)
 
@@ -418,11 +418,11 @@ func TestList_RoutesToColdWhenStartDateIsNil(t *testing.T) {
 	if total != 10 {
 		t.Fatalf("expected total 10, got %d", total)
 	}
-	if hot.listCalled {
-		t.Fatal("hot.List should not be called when StartDate is nil")
+	if !hot.listCalled {
+		t.Fatal("expected hot.List to be called when StartDate is nil (Redis-first default)")
 	}
-	if !cold.listCalled {
-		t.Fatal("expected cold.List to be called when StartDate is nil")
+	if cold.listCalled {
+		t.Fatal("cold.List should not be called when StartDate is nil")
 	}
 }
 

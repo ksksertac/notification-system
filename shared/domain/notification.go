@@ -109,6 +109,18 @@ func (s Status) CanTransitionTo(target Status) bool {
 	return false
 }
 
+// ValidateTransition checks if a status transition is allowed and returns an
+// error if not. Use this at the service level for user-facing operations (e.g.
+// Cancel). Repository-level transitions are intentionally unchecked to allow
+// recovery flows (e.g. RecoverStuckQueued, RecoverStuckProcessing) that may
+// need to force non-standard transitions.
+func (s Status) ValidateTransition(target Status) error {
+	if !s.CanTransitionTo(target) {
+		return fmt.Errorf("invalid transition from %s to %s", s, target)
+	}
+	return nil
+}
+
 func (s Status) IsFinal() bool {
 	return s == StatusDelivered || s == StatusCancelled
 }

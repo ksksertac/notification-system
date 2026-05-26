@@ -75,20 +75,37 @@ func (w *Writer) evictOldEntries(ctx context.Context) {
 }
 
 func (w *Writer) evictBatch(ctx context.Context, ids []string) {
-	pipe := w.redis.Pipeline()
+	// Phase 1: Pipeline all Exists and HGetAll lookups to avoid per-ID round-trips
+	lookupPipe := w.redis.Pipeline()
+
+	existsCmds := make(map[string]*redis.IntCmd, len(ids))
+	hgetCmds := make(map[string]*redis.MapStringStringCmd, len(ids))
 
 	for _, idStr := range ids {
-		persisted, _ := w.redis.Exists(ctx, repository.KeyPersisted+idStr).Result()
+		existsCmds[idStr] = lookupPipe.Exists(ctx, repository.KeyPersisted+idStr)
+		hgetCmds[idStr] = lookupPipe.HGetAll(ctx, repository.KeyNotification+idStr)
+	}
+
+	if _, err := lookupPipe.Exec(ctx); err != nil {
+		w.logger.Error("cleanup: lookup pipeline exec failed", "error", err, "batch_size", len(ids))
+		return
+	}
+
+	// Phase 2: Build eviction pipeline based on lookup results
+	evictPipe := w.redis.Pipeline()
+
+	for _, idStr := range ids {
+		persisted, _ := existsCmds[idStr].Result()
 		if persisted == 0 {
 			continue
 		}
 
 		nKey := repository.KeyNotification + idStr
 
-		vals, err := w.redis.HGetAll(ctx, nKey).Result()
+		vals, err := hgetCmds[idStr].Result()
 		if err != nil || len(vals) == 0 {
-			pipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
-			pipe.Del(ctx, repository.KeyPersisted+idStr)
+			evictPipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
+			evictPipe.Del(ctx, repository.KeyPersisted+idStr)
 			continue
 		}
 
@@ -96,24 +113,24 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 		channel := vals["channel"]
 		batchID := vals["batch_id"]
 
-		pipe.Del(ctx, nKey)
-		pipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
+		evictPipe.Del(ctx, nKey)
+		evictPipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
 		if status != "" {
-			pipe.ZRem(ctx, repository.KeyIdxStatus+status, idStr)
+			evictPipe.ZRem(ctx, repository.KeyIdxStatus+status, idStr)
 		}
 		if channel != "" {
-			pipe.ZRem(ctx, repository.KeyIdxChannel+channel, idStr)
+			evictPipe.ZRem(ctx, repository.KeyIdxChannel+channel, idStr)
 		}
 		if batchID != "" {
-			pipe.SRem(ctx, repository.KeyIdxBatch+batchID, idStr)
+			evictPipe.SRem(ctx, repository.KeyIdxBatch+batchID, idStr)
 		}
 
-		pipe.Del(ctx, repository.KeyDLQ+idStr)
-		pipe.Del(ctx, repository.KeyPersisted+idStr)
+		evictPipe.Del(ctx, repository.KeyDLQ+idStr)
+		evictPipe.Del(ctx, repository.KeyPersisted+idStr)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil {
-		w.logger.Error("cleanup: pipeline exec failed", "error", err, "batch_size", len(ids))
+	if _, err := evictPipe.Exec(ctx); err != nil {
+		w.logger.Error("cleanup: eviction pipeline exec failed", "error", err, "batch_size", len(ids))
 	}
 }
 

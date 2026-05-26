@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -84,8 +85,12 @@ type ProviderConfig struct {
 }
 
 type SchedulerConfig struct {
-	PollInterval time.Duration
-	BatchSize    int
+	PollInterval      time.Duration
+	BatchSize         int
+	StuckThreshold    time.Duration
+	RecoveryInterval  time.Duration
+	RetryInterval     time.Duration
+	OrphanThreshold   time.Duration
 }
 
 type LogConfig struct {
@@ -143,8 +148,12 @@ func Load() (*Config, error) {
 			Timeout:    envDurationOrDefault("PROVIDER_TIMEOUT", 10*time.Second),
 		},
 		Scheduler: SchedulerConfig{
-			PollInterval: envDurationOrDefault("SCHEDULER_POLL_INTERVAL", 5*time.Second),
-			BatchSize:    envIntOrDefault("SCHEDULER_BATCH_SIZE", 500),
+			PollInterval:     envDurationOrDefault("SCHEDULER_POLL_INTERVAL", 5*time.Second),
+			BatchSize:        envIntOrDefault("SCHEDULER_BATCH_SIZE", 500),
+			StuckThreshold:   envDurationOrDefault("SCHEDULER_STUCK_THRESHOLD", 2*time.Minute),
+			RecoveryInterval: envDurationOrDefault("SCHEDULER_RECOVERY_INTERVAL", 30*time.Second),
+			RetryInterval:    envDurationOrDefault("SCHEDULER_RETRY_INTERVAL", 10*time.Second),
+			OrphanThreshold:  envDurationOrDefault("SCHEDULER_ORPHAN_THRESHOLD", 30*time.Second),
 		},
 		Log: LogConfig{
 			Level: envOrDefault("LOG_LEVEL", "info"),
@@ -168,6 +177,9 @@ func (c *Config) validate() error {
 	if c.Rate.LimitPerSecond < 1 {
 		return fmt.Errorf("RATE_LIMIT_PER_SECOND must be at least 1")
 	}
+	if c.DB.Password == "notification_secret" {
+		slog.Warn("DB_PASSWORD is using the default hardcoded value; set DB_PASSWORD env var for production")
+	}
 	return nil
 }
 
@@ -185,6 +197,7 @@ func envIntOrDefault(key string, fallback int) int {
 	}
 	i, err := strconv.Atoi(v)
 	if err != nil {
+		slog.Warn("invalid integer for env var, using default", "key", key, "value", v, "default", fallback, "error", err)
 		return fallback
 	}
 	return i
@@ -197,6 +210,7 @@ func envDurationOrDefault(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
+		slog.Warn("invalid duration for env var, using default", "key", key, "value", v, "default", fallback, "error", err)
 		return fallback
 	}
 	return d

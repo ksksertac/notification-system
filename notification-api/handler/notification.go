@@ -2,16 +2,16 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/sertacyildirim/notification-system/notification-api/middleware"
-	"github.com/sertacyildirim/notification-system/shared/domain"
 	"github.com/sertacyildirim/notification-system/notification-api/service"
+	"github.com/sertacyildirim/notification-system/shared/domain"
 )
 
 type NotificationHandler struct {
@@ -45,7 +45,7 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	n, err := h.svc.Create(r.Context(), req, idempotencyKey)
 	if err != nil {
-		if strings.Contains(err.Error(), "validation:") {
+		if errors.Is(err, service.ErrValidation) {
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 			return
 		}
@@ -76,7 +76,7 @@ func (h *NotificationHandler) CreateBatch(w http.ResponseWriter, r *http.Request
 
 	batchID, notifications, err := h.svc.CreateBatch(r.Context(), req)
 	if err != nil && batchID == nil {
-		if strings.Contains(err.Error(), "validation:") {
+		if errors.Is(err, service.ErrValidation) {
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 			return
 		}
@@ -179,15 +179,15 @@ func (h *NotificationHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 
 	err = h.svc.Cancel(r.Context(), id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, service.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
 			return
 		}
-		if strings.Contains(err.Error(), "cannot cancel") {
+		if errors.Is(err, service.ErrConflict) {
 			writeError(w, r, http.StatusConflict, "CONFLICT", err.Error())
 			return
 		}
-		if strings.Contains(err.Error(), "concurrently") {
+		if errors.Is(err, service.ErrConcurrentModification) {
 			writeError(w, r, http.StatusConflict, "CONFLICT", err.Error())
 			return
 		}

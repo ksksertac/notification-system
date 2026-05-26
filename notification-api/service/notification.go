@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,14 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/domain"
 	"github.com/sertacyildirim/notification-system/shared/queue"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+)
+
+// Sentinel errors for structured error handling in handlers.
+var (
+	ErrValidation             = errors.New("validation error")
+	ErrNotFound               = errors.New("not found")
+	ErrConflict               = errors.New("conflict")
+	ErrConcurrentModification = errors.New("concurrent modification")
 )
 
 type NotificationService interface {
@@ -45,7 +54,7 @@ func NewNotificationService(repo repository.NotificationRepository, publisher qu
 
 func (s *notificationService) Create(ctx context.Context, req domain.CreateNotificationRequest, idempotencyKey string) (*domain.Notification, error) {
 	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("validation: %w", err)
+		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
 	}
 
 	if idempotencyKey != "" {
@@ -99,6 +108,11 @@ func (s *notificationService) Create(ctx context.Context, req domain.CreateNotif
 			if err := s.publisher.Publish(ctx, n); err == nil {
 				s.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
 				n.Status = domain.StatusQueued
+			} else {
+				s.logger.Warn("redis publish failed, scheduler will retry",
+					"notification_id", n.ID,
+					"error", err,
+				)
 			}
 		}
 	} else {
@@ -112,7 +126,7 @@ func (s *notificationService) Create(ctx context.Context, req domain.CreateNotif
 
 func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchCreateRequest) (*uuid.UUID, []*domain.Notification, error) {
 	if err := req.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("validation: %w", err)
+		return nil, nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
 	}
 
 	batchID := uuid.New()
@@ -190,11 +204,11 @@ func (s *notificationService) Cancel(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("getting notification: %w", err)
 	}
 	if n == nil {
-		return fmt.Errorf("notification not found")
+		return fmt.Errorf("%w: notification %s", ErrNotFound, id)
 	}
 
 	if !n.Status.CanTransitionTo(domain.StatusCancelled) {
-		return fmt.Errorf("cannot cancel notification in %s status", n.Status)
+		return fmt.Errorf("%w: cannot cancel notification in %s status", ErrConflict, n.Status)
 	}
 
 	updated, err := s.repo.UpdateStatus(ctx, id, n.Status, domain.StatusCancelled)
@@ -202,7 +216,7 @@ func (s *notificationService) Cancel(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("cancelling notification: %w", err)
 	}
 	if !updated {
-		return fmt.Errorf("notification status changed concurrently")
+		return fmt.Errorf("%w: notification status changed concurrently", ErrConcurrentModification)
 	}
 
 	return nil

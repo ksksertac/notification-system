@@ -114,12 +114,15 @@ func (wb *WriteBuffer) flush(batch []*writeRequest) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	notifications := make([]*domain.Notification, len(batch))
 	for i, req := range batch {
 		notifications[i] = req.notification
 	}
 
-	err := wb.repo.CreateBatch(context.Background(), notifications)
+	err := wb.repo.CreateBatch(ctx, notifications)
 
 	if err != nil {
 		wb.logger.Error("write buffer flush failed", "count", len(batch), "error", err)
@@ -139,9 +142,9 @@ func (wb *WriteBuffer) flush(batch []*writeRequest) {
 	}
 
 	if len(immediate) > 0 {
-		if pubErr := wb.publisher.PublishBatch(context.Background(), immediate); pubErr == nil {
+		if pubErr := wb.publisher.PublishBatch(ctx, immediate); pubErr == nil {
 			for _, n := range immediate {
-				wb.repo.UpdateStatus(context.Background(), n.ID, domain.StatusPending, domain.StatusQueued)
+				wb.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
 				n.Status = domain.StatusQueued
 			}
 		} else {

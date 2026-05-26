@@ -1,7 +1,7 @@
 package delivery
 
 import (
-	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -173,7 +173,7 @@ func (r *CircuitBreakerRegistry) Get(channel string) CircuitBreaker {
 			if origOnChange != nil {
 				origOnChange(from, to)
 			}
-			_ = fmt.Sprintf("circuit breaker %s: %s -> %s", channel, from, to)
+			slog.Info("circuit breaker state change", "channel", channel, "from", from.String(), "to", to.String())
 		}
 		cb = NewCircuitBreaker(cfg)
 	}

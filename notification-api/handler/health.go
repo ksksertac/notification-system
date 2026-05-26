@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -11,10 +12,11 @@ import (
 
 type HealthHandler struct {
 	redis *redis.Client
+	db    *sql.DB // optional — nil when Postgres is not used by this service
 }
 
-func NewHealthHandler(redis *redis.Client) *HealthHandler {
-	return &HealthHandler{redis: redis}
+func NewHealthHandler(redis *redis.Client, db *sql.DB) *HealthHandler {
+	return &HealthHandler{redis: redis, db: db}
 }
 
 type healthStatus struct {
@@ -24,7 +26,7 @@ type healthStatus struct {
 
 // Health godoc
 // @Summary Health check
-// @Description Check health status of Redis (primary data store)
+// @Description Check health status of Redis (primary data store) and optionally Postgres
 // @Tags system
 // @Produce json
 // @Success 200 {object} healthStatus
@@ -44,6 +46,15 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 		status.Status = "unhealthy"
 	} else {
 		status.Components["redis"] = "healthy"
+	}
+
+	if h.db != nil {
+		if err := h.db.PingContext(ctx); err != nil {
+			status.Components["postgres"] = "unhealthy: " + err.Error()
+			status.Status = "unhealthy"
+		} else {
+			status.Components["postgres"] = "healthy"
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

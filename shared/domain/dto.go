@@ -84,8 +84,8 @@ func (r *BatchCreateRequest) Validate() error {
 	if len(r.Notifications) > 1000 {
 		return fmt.Errorf("batch size exceeds maximum of 1000")
 	}
-	for i, n := range r.Notifications {
-		if err := n.Validate(); err != nil {
+	for i := range r.Notifications {
+		if err := r.Notifications[i].Validate(); err != nil {
 			return fmt.Errorf("notification[%d]: %w", i, err)
 		}
 	}

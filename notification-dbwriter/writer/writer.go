@@ -87,7 +87,9 @@ func (w *Writer) run(ctx context.Context, consumerName string) {
 	for {
 		select {
 		case <-ctx.Done():
-			w.flush(ctx, pending)
+			if err := w.flush(ctx, pending); err == nil {
+				w.ackMessages(ctx, pending)
+			}
 			return
 		case <-reclaimTicker.C:
 			w.reclaimPending(ctx, consumerName)
@@ -96,8 +98,11 @@ func (w *Writer) run(ctx context.Context, consumerName string) {
 			pending = append(pending, msgs...)
 
 			if len(pending) >= w.batchSize || (len(pending) > 0 && len(msgs) == 0) {
-				w.flush(ctx, pending)
-				w.ackMessages(ctx, pending)
+				if err := w.flush(ctx, pending); err == nil {
+					w.ackMessages(ctx, pending)
+				} else {
+					w.logger.Warn("flush failed, messages will be re-delivered", "pending", len(pending), "error", err)
+				}
 				pending = nil
 			}
 		}
@@ -118,7 +123,10 @@ func (w *Writer) readBatch(ctx context.Context, consumer string) []pendingMsg {
 		Block:    50 * time.Millisecond,
 	}).Result()
 
-	if err == redis.Nil || err != nil {
+	if err != nil {
+		if err != redis.Nil {
+			w.logger.Error("failed to read from persist stream", "error", err)
+		}
 		return nil
 	}
 
@@ -138,9 +146,9 @@ func (w *Writer) readBatch(ctx context.Context, consumer string) []pendingMsg {
 	return msgs
 }
 
-func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) {
+func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) error {
 	if len(msgs) == 0 {
-		return
+		return nil
 	}
 
 	var events []*repository.PersistEvent
@@ -152,18 +160,26 @@ func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) {
 
 	creates, updates := repository.SplitPersistActions(events)
 
+	var flushErr error
+
 	if len(creates) > 0 {
-		w.flushCreates(ctx, creates)
+		if err := w.flushCreates(ctx, creates); err != nil {
+			flushErr = err
+		}
 	}
 
 	if len(updates) > 0 {
-		w.flushUpdates(updates)
+		if err := w.flushUpdates(ctx, updates); err != nil {
+			flushErr = err
+		}
 	}
 
 	w.logger.Debug("flushed to postgres", "creates", len(creates), "updates", len(updates))
+	return flushErr
 }
 
-func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notification) {
+func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notification) error {
+	var lastErr error
 	for i := 0; i < len(notifications); i += w.batchSize {
 		end := i + w.batchSize
 		if end > len(notifications) {
@@ -171,8 +187,9 @@ func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notif
 		}
 		batch := notifications[i:end]
 
-		if err := w.repo.CreateBatch(context.Background(), batch); err != nil {
+		if err := w.repo.CreateBatch(ctx, batch); err != nil {
 			w.logger.Error("failed to batch insert to postgres", "count", len(batch), "error", err)
+			lastErr = err
 			continue
 		}
 
@@ -185,9 +202,11 @@ func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notif
 			w.logger.Error("failed to mark notifications as persisted", "count", len(batch), "error", err)
 		}
 	}
+	return lastErr
 }
 
-func (w *Writer) flushUpdates(updates []map[string]string) {
+func (w *Writer) flushUpdates(ctx context.Context, updates []map[string]string) error {
+	var lastErr error
 	for _, u := range updates {
 		action := u["action"]
 		idStr := u["id"]
@@ -201,8 +220,9 @@ func (w *Writer) flushUpdates(updates []map[string]string) {
 		case "update_status":
 			from := domain.Status(u["from"])
 			to := domain.Status(u["to"])
-			if _, err := w.repo.UpdateStatus(context.Background(), id, from, to); err != nil {
+			if _, err := w.repo.UpdateStatus(ctx, id, from, to); err != nil {
 				w.logger.Error("failed to update status in postgres", "id", idStr, "error", err)
+				lastErr = err
 			}
 
 		case "update_status_details":
@@ -216,29 +236,34 @@ func (w *Writer) flushUpdates(updates []map[string]string) {
 			if v, ok := u["error_message"]; ok {
 				emsg = &v
 			}
-			if _, err := w.repo.UpdateStatusWithDetails(context.Background(), id, from, to, pmid, emsg); err != nil {
+			if _, err := w.repo.UpdateStatusWithDetails(ctx, id, from, to, pmid, emsg); err != nil {
 				w.logger.Error("failed to update status details in postgres", "id", idStr, "error", err)
+				lastErr = err
 			}
 
 		case "increment_retry":
 			nextRetryAt, _ := time.Parse(time.RFC3339Nano, u["next_retry_at"])
 			errMsg := u["error_message"]
-			if err := w.repo.IncrementRetry(context.Background(), id, nextRetryAt, errMsg); err != nil {
+			if err := w.repo.IncrementRetry(ctx, id, nextRetryAt, errMsg); err != nil {
 				w.logger.Error("failed to increment retry in postgres", "id", idStr, "error", err)
+				lastErr = err
 			}
 
 		case "move_to_dlq":
-			n, err := w.repo.GetByID(context.Background(), id)
+			n, err := w.repo.GetByID(ctx, id)
 			if err != nil || n == nil {
 				w.logger.Error("failed to get notification for DLQ", "id", idStr, "error", err)
+				lastErr = err
 				continue
 			}
 			errMsg := u["error_message"]
-			if err := w.repo.MoveToDLQ(context.Background(), n, errMsg); err != nil {
+			if err := w.repo.MoveToDLQ(ctx, n, errMsg); err != nil {
 				w.logger.Error("failed to move to DLQ in postgres", "id", idStr, "error", err)
+				lastErr = err
 			}
 		}
 	}
+	return lastErr
 }
 
 func (w *Writer) reclaimPending(ctx context.Context, consumerName string) {
@@ -273,7 +298,10 @@ func (w *Writer) reclaimPending(ctx context.Context, consumerName string) {
 			msgs = append(msgs, pendingMsg{streamID: msg.ID, event: evt})
 		}
 
-		w.flush(ctx, msgs)
+		if err := w.flush(ctx, msgs); err != nil {
+			w.logger.Warn("flush failed for reclaimed messages, will retry", "count", len(msgs), "error", err)
+			return
+		}
 		w.ackMessages(ctx, msgs)
 		w.logger.Info("reclaimed pending messages", "count", len(msgs))
 

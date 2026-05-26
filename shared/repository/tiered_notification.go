@@ -61,11 +61,14 @@ func (t *TieredNotificationRepo) GetByIdempotencyKey(ctx context.Context, key st
 func (t *TieredNotificationRepo) List(ctx context.Context, req domain.ListNotificationsRequest) ([]*domain.Notification, int64, error) {
 	hotWindow := time.Now().UTC().Add(-1 * time.Hour)
 
-	if req.StartDate != nil && req.StartDate.After(hotWindow) {
-		return t.hot.List(ctx, req)
+	// Default to hot tier (Redis) when no StartDate filter is provided,
+	// since most queries are for recent data. Only route to cold tier
+	// (PostgreSQL) when StartDate is explicitly before the hot window.
+	if req.StartDate != nil && req.StartDate.Before(hotWindow) {
+		return t.cold.List(ctx, req)
 	}
 
-	return t.cold.List(ctx, req)
+	return t.hot.List(ctx, req)
 }
 
 func (t *TieredNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, from, to domain.Status) (bool, error) {

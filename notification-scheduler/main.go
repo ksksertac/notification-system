@@ -59,7 +59,14 @@ func run() error {
 	schedCtx, schedCancel := context.WithCancel(context.Background())
 	defer schedCancel()
 
-	sched := scheduler.New(repo, publisher, cfg.Scheduler.PollInterval, cfg.Scheduler.BatchSize, logger)
+	sched := scheduler.NewWithConfig(repo, publisher, scheduler.Config{
+		PollInterval:     cfg.Scheduler.PollInterval,
+		BatchSize:        cfg.Scheduler.BatchSize,
+		StuckThreshold:   cfg.Scheduler.StuckThreshold,
+		RecoveryInterval: cfg.Scheduler.RecoveryInterval,
+		RetryInterval:    cfg.Scheduler.RetryInterval,
+		OrphanThreshold:  cfg.Scheduler.OrphanThreshold,
+	}, logger, nil)
 	sched.Start(schedCtx)
 
 	logger.Info("scheduler running",
