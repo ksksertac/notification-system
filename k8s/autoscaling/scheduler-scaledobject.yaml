@@ -11,7 +11,10 @@ spec:
   minReplicaCount: 1
   maxReplicaCount: 3
   triggers:
-    - type: cpu
-      metricType: Utilization
+    # Scale based on schedule:pending sorted set size (ZCARD)
+    - type: redis
       metadata:
-        value: "70"
+        address: redis.notification.svc.cluster.local:6379
+        listName: schedule:pending
+        listLength: "100"
+        activationListLength: "10"

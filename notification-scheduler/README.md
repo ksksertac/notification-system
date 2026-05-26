@@ -150,7 +150,7 @@ See [.env.example](.env.example) for all configuration options.
 
 ## Kubernetes — KEDA Autoscaling
 
-In the K3s deployment (`./k8s/setup.sh`), KEDA scales scheduler replicas based on CPU utilization (threshold: 70%). Min 1, max 3 replicas. The scheduler reads from sorted sets (not streams), so CPU-based scaling is used instead of stream-based scaling.
+In the K3s deployment (`./k8s/setup.sh`), KEDA scales scheduler replicas based on the `schedule:pending` sorted set size. When the set exceeds 100 items, KEDA begins scaling up (activation threshold: 10). Min 1, max 3 replicas. This is more responsive than CPU-based scaling — pods scale proactively as scheduled notifications accumulate, rather than reactively after CPU spikes.
 
 ## Run
 

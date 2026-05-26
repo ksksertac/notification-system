@@ -165,7 +165,7 @@ kubectl -n notification get pods -w
 | **notification-consumer** | `redis-streams` | Stream lag on `notifications:high/normal/low` | 1 → 10 |
 | **notification-dbwriter** | `redis-streams` | Stream lag on `persist:queue` | 1 → 8 |
 | **notification-api** | `cpu` | CPU utilization > 70% | 1 → 5 |
-| **notification-scheduler** | `cpu` | CPU utilization > 70% | 1 → 3 |
+| **notification-scheduler** | `redis` | Sorted set size (`schedule:pending`) > 100 | 1 → 3 |
 
 Consumer scaling is priority-aware — high-priority queue lag triggers more aggressive scaling (threshold: 5) than low-priority (threshold: 20).
 
@@ -394,7 +394,7 @@ Traditional (Ring Hash):     Ours (Race-to-Claim):
 | **DBWriter** | Redis `XREADGROUP` on `persist:queue` | Same as consumer — consumer group guarantees |
 | **API** | Stateless HTTP | No shared state — any pod handles any request |
 
-**KEDA Autoscaling (K3s):** In the Kubernetes deployment (`./k8s/setup.sh`), KEDA watches Redis Stream lag and automatically adjusts replica counts. Consumer and dbwriter scale on queue depth (redis-streams trigger); API and scheduler scale on CPU utilization. See [Kubernetes — K3s + KEDA](#kubernetes--k3s--keda-event-driven-autoscaling).
+**KEDA Autoscaling (K3s):** In the Kubernetes deployment (`./k8s/setup.sh`), KEDA watches Redis metrics and automatically adjusts replica counts. Consumer and dbwriter scale on stream lag (redis-streams trigger); scheduler scales on sorted set depth (redis trigger on `schedule:pending`); API scales on CPU utilization. See [Kubernetes — K3s + KEDA](#kubernetes--k3s--keda-event-driven-autoscaling).
 
 ### Redis Lua Scripts — Why?
 
