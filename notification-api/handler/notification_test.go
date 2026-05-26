@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/sertacyildirim/notification-system/notification-api/service"
 	"github.com/sertacyildirim/notification-system/shared/domain"
 )
 
@@ -138,7 +139,7 @@ func TestCreate_InvalidBody(t *testing.T) {
 
 func TestCreate_ValidationError(t *testing.T) {
 	h := NewNotificationHandler(&mockService{
-		err: fmt.Errorf("validation: recipient is required"),
+		err: fmt.Errorf("%w: recipient is required", service.ErrValidation),
 	})
 
 	body := `{"recipient":"","channel":"sms","content":"hello","priority":"normal"}`
@@ -236,7 +237,7 @@ func TestCreateBatch_InvalidBody(t *testing.T) {
 func TestCreateBatch_ValidationError(t *testing.T) {
 	h := NewNotificationHandler(&mockService{
 		createBatchFn: func(ctx context.Context, req domain.BatchCreateRequest) (*uuid.UUID, []*domain.Notification, error) {
-			return nil, nil, fmt.Errorf("validation: at least one notification is required")
+			return nil, nil, fmt.Errorf("%w: at least one notification is required", service.ErrValidation)
 		},
 	})
 
@@ -484,7 +485,7 @@ func TestCancel_InvalidID(t *testing.T) {
 func TestCancel_NotFound(t *testing.T) {
 	h := NewNotificationHandler(&mockService{
 		cancelFn: func(ctx context.Context, id uuid.UUID) error {
-			return fmt.Errorf("notification not found")
+			return fmt.Errorf("%w: notification %s", service.ErrNotFound, id)
 		},
 	})
 
@@ -502,7 +503,7 @@ func TestCancel_NotFound(t *testing.T) {
 
 func TestCancel_Conflict(t *testing.T) {
 	h := NewNotificationHandler(&mockService{
-		err: fmt.Errorf("cannot cancel notification in processing status"),
+		err: fmt.Errorf("%w: cannot cancel notification in processing status", service.ErrConflict),
 	})
 
 	r := chi.NewRouter()
@@ -520,7 +521,7 @@ func TestCancel_Conflict(t *testing.T) {
 func TestCancel_ConcurrentConflict(t *testing.T) {
 	h := NewNotificationHandler(&mockService{
 		cancelFn: func(ctx context.Context, id uuid.UUID) error {
-			return fmt.Errorf("notification was modified concurrently")
+			return fmt.Errorf("%w: notification was modified concurrently", service.ErrConcurrentModification)
 		},
 	})
 

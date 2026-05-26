@@ -238,8 +238,8 @@ func TestCreate_ValidationError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "validation") {
-		t.Errorf("expected validation error, got: %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("expected ErrValidation, got: %v", err)
 	}
 }
 
@@ -287,8 +287,8 @@ func TestCancel_AlreadyProcessing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error cancelling processing notification")
 	}
-	if !strings.Contains(err.Error(), "cannot cancel") {
-		t.Errorf("expected 'cannot cancel' error, got: %v", err)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict, got: %v", err)
 	}
 }
 
@@ -481,8 +481,8 @@ func TestCancel_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for not found")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected 'not found' error, got: %v", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
 
@@ -501,8 +501,8 @@ func TestCancel_AlreadyDelivered(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error cancelling delivered notification")
 	}
-	if !strings.Contains(err.Error(), "cannot cancel") {
-		t.Errorf("expected 'cannot cancel' error, got: %v", err)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict, got: %v", err)
 	}
 }
 
@@ -524,8 +524,8 @@ func TestCancel_ConcurrentUpdateFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for concurrent update failure")
 	}
-	if !strings.Contains(err.Error(), "concurrently") {
-		t.Errorf("expected 'concurrently' error, got: %v", err)
+	if !errors.Is(err, ErrConcurrentModification) {
+		t.Errorf("expected ErrConcurrentModification, got: %v", err)
 	}
 }
 
@@ -603,8 +603,8 @@ func TestCreate_InvalidEmailRecipient(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for invalid email")
 	}
-	if !strings.Contains(err.Error(), "validation") {
-		t.Errorf("expected validation error, got: %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("expected ErrValidation, got: %v", err)
 	}
 }
 
@@ -655,8 +655,8 @@ func TestCreate_ContentTooLong(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for content too long")
 	}
-	if !strings.Contains(err.Error(), "validation") {
-		t.Errorf("expected validation error, got: %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("expected ErrValidation, got: %v", err)
 	}
 }
 
@@ -759,8 +759,8 @@ func TestCreateBatch_ValidationError_EmptyBatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for empty batch")
 	}
-	if !strings.Contains(err.Error(), "validation") {
-		t.Errorf("expected validation error, got: %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("expected ErrValidation, got: %v", err)
 	}
 }
 
@@ -780,8 +780,8 @@ func TestCreateBatch_ValidationError_InvalidItem(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for invalid item")
 	}
-	if !strings.Contains(err.Error(), "validation") {
-		t.Errorf("expected validation error, got: %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("expected ErrValidation, got: %v", err)
 	}
 }
 
@@ -1124,8 +1124,8 @@ func TestCancel_AlreadyCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error cancelling already cancelled notification")
 	}
-	if !strings.Contains(err.Error(), "cannot cancel") {
-		t.Errorf("expected 'cannot cancel' error, got: %v", err)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict, got: %v", err)
 	}
 }
 

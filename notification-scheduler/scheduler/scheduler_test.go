@@ -139,12 +139,16 @@ func makeNotification(priority domain.Priority, scheduledAt time.Time) *domain.N
 
 func newTestScheduler(repo repository.NotificationRepository, pub *mockPublisher) *Scheduler {
 	return &Scheduler{
-		repo:           repo,
-		publisher:      pub,
-		pollInterval:   50 * time.Millisecond,
-		batchSize:      10,
-		stuckThreshold: 2 * time.Minute,
-		logger:         slog.Default(),
+		repo:             repo,
+		publisher:        pub,
+		pollInterval:     50 * time.Millisecond,
+		batchSize:        10,
+		stuckThreshold:   2 * time.Minute,
+		recoveryInterval: 30 * time.Second,
+		retryInterval:    10 * time.Second,
+		orphanThreshold:  30 * time.Second,
+		logger:           slog.Default(),
+		metrics:          noopMetrics{},
 	}
 }
 
@@ -878,12 +882,16 @@ func TestScheduler_RunRetryRecovery(t *testing.T) {
 
 		pub := &mockPublisher{}
 		s := &Scheduler{
-			repo:           repo,
-			publisher:      pub,
-			pollInterval:   50 * time.Millisecond,
-			batchSize:      10,
-			stuckThreshold: 2 * time.Minute,
-			logger:         slog.Default(),
+			repo:             repo,
+			publisher:        pub,
+			pollInterval:     50 * time.Millisecond,
+			batchSize:        10,
+			stuckThreshold:   2 * time.Minute,
+			recoveryInterval: 30 * time.Second,
+			retryInterval:    10 * time.Second,
+			orphanThreshold:  30 * time.Second,
+			logger:           slog.Default(),
+			metrics:          noopMetrics{},
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1131,12 +1139,16 @@ func TestScheduler_ContextCancellation(t *testing.T) {
 
 		pub := &mockPublisher{}
 		s := &Scheduler{
-			repo:           repo,
-			publisher:      pub,
-			pollInterval:   10 * time.Millisecond,
-			batchSize:      10,
-			stuckThreshold: 2 * time.Minute,
-			logger:         slog.Default(),
+			repo:             repo,
+			publisher:        pub,
+			pollInterval:     10 * time.Millisecond,
+			batchSize:        10,
+			stuckThreshold:   2 * time.Minute,
+			recoveryInterval: 30 * time.Second,
+			retryInterval:    10 * time.Second,
+			orphanThreshold:  30 * time.Second,
+			logger:           slog.Default(),
+			metrics:          noopMetrics{},
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())

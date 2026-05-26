@@ -22,7 +22,7 @@ func TestHealth_Healthy(t *testing.T) {
 	})
 	defer client.Close()
 
-	h := NewHealthHandler(client)
+	h := NewHealthHandler(client, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestHealth_Unhealthy(t *testing.T) {
 	// Close miniredis to simulate unhealthy Redis
 	mr.Close()
 
-	h := NewHealthHandler(client)
+	h := NewHealthHandler(client, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()
