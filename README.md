@@ -73,13 +73,27 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Security
+
+| Feature | Implementation |
+|---------|---------------|
+| **API Key Authentication** | `X-API-Key` header with timing-safe comparison (`subtle.ConstantTimeCompare`), protects `/api/v1/*` routes |
+| **WebSocket Origin Validation** | Per-request origin check against configurable allowlist (`WS_ALLOWED_ORIGINS`) |
+| **WebSocket Heartbeat** | Ping/pong every 30s, 60s read deadline — detects and evicts stale connections |
+| **WebSocket Connection Limit** | Max 1000 concurrent connections to prevent resource exhaustion |
+| **Rate Limiting** | Global Redis sliding window (1000 req/s), returns `429` with `Retry-After` header |
+| **Correlation ID Validation** | Max 64 chars, alphanumeric + hyphens only — prevents header injection |
+| **Request Body Limit** | 2 MB max body size middleware |
+| **Template Rendering** | `html/template` (not `text/template`) for XSS-safe output |
+| **Prometheus Isolation** | Custom registry per service — no global metric conflicts between instances |
+
 ## Services
 
 | Service | Description | Scaling | README |
 |---------|-------------|---------|--------|
-| [notification-api](notification-api/) | REST API, WebSocket, Swagger, tiered reads | Horizontal (stateless) | [Details](notification-api/README.md) |
+| [notification-api](notification-api/) | REST API, WebSocket, Swagger, tiered reads, API key auth | Horizontal (stateless) | [Details](notification-api/README.md) |
 | [notification-consumer](notification-consumer/) | Queue workers, delivery, retry, circuit breaker | Horizontal (consumer groups) | [Details](notification-consumer/README.md) |
-| [notification-scheduler](notification-scheduler/) | Scheduled + orphaned notification processing | Horizontal (Lua race-to-claim) | [Details](notification-scheduler/README.md) |
+| [notification-scheduler](notification-scheduler/) | Scheduled + orphaned notification processing, configurable thresholds | Horizontal (Lua race-to-claim) | [Details](notification-scheduler/README.md) |
 | [notification-dbwriter](notification-dbwriter/) | Async Redis-to-PostgreSQL persistence, auto-migration, cleanup | Horizontal (consumer groups) | [Details](notification-dbwriter/README.md) |
 | [shared](shared/) | Domain models, config, Redis, queue, repository | Library (not deployed) | - |
 
@@ -100,7 +114,15 @@ cp .env.example .env
 
 All SMS, Email, and Push deliveries will be sent to this URL. You can monitor deliveries in real-time on the webhook.site dashboard.
 
-### 2. Start Services
+### 2. Configure Security (Optional)
+
+```bash
+# In .env, set optional security features:
+# API_KEY=your-secret-api-key                           # Protects /api/v1/* routes
+# WS_ALLOWED_ORIGINS=https://example.com,https://app.example.com  # WebSocket origin whitelist
+```
+
+### 3. Start Services
 
 ```bash
 # Start everything — builds 4 Docker images, runs all services + observability
@@ -158,6 +180,19 @@ Every notification state has an automatic recovery path. If any component crashe
 ## Data Consistency & Reliability
 
 The system uses an **optimistic publish pattern** (outbox-like) to guarantee zero message loss, even during pod crashes or Redis downtime. Redis is the primary data store — all hot-path reads and writes go through Redis. PostgreSQL serves as cold storage for reporting and analytics, fed asynchronously via the `persist:queue` stream. A **tiered read** pattern ensures the API reads from Redis for recent data (last 1 hour) and falls back to PostgreSQL for older data.
+
+### Atomic Lua Scripts
+
+All critical Redis operations are performed via Lua scripts to ensure atomicity:
+
+| Operation | What it does atomically |
+|-----------|------------------------|
+| **Create** | HSET + all index updates (status, channel, created_at, batch, idempotency, schedule) + persist event — single atomic operation |
+| **UpdateStatus (CAS)** | Read current status + read score from idx:created_at + HSET + ZREM/ZADD status indexes + persist event |
+| **IncrementRetry** | HINCRBY retry_count + HSET next fields + ZREM/ZADD status indexes + ZADD idx:retry + persist event |
+| **Recovery scripts** | Status reset + ZREM/ZADD index updates + persist event — all inside one Lua call |
+
+This eliminates TOCTOU (time-of-check-time-of-use) race conditions that existed when these operations were split across multiple Redis commands.
 
 ### Notification Lifecycle
 
@@ -338,10 +373,12 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 | Primary Data Store | Redis (Hashes, Sorted Sets, Streams, Sets) |
 | Cold Storage | PostgreSQL 16 + PgBouncer (dbwriter only) |
 | Queue | Redis Streams |
+| Auth | API Key middleware (timing-safe `subtle.ConstantTimeCompare`) |
 | Rate Limit | Redis Lua sliding window (inbound global + outbound per-channel) |
+| Template | `html/template` with sync.Map cache (XSS-safe) |
 | Migrations | golang-migrate (auto, Redis leader election via dbwriter) |
 | API Docs | Swagger (swaggo) |
-| Metrics | Prometheus + Grafana |
+| Metrics | Prometheus (custom registries) + Grafana |
 | Logging | Structured JSON + Loki + Promtail |
 | Alerting | Alertmanager (Slack/Teams webhook) |
 | CI/CD | GitHub Actions (per service) |
@@ -358,10 +395,16 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **Multi-Layer Safety Net**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
 - **Global Rate Limiting**: Redis sliding window (1000 req/s shared across all pods) protects the system from traffic bursts
 - **Weighted Polling**: prevents priority starvation (high:10, normal:5, low:2)
-- **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe
+- **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts
 - **Exponential Backoff + Jitter**: prevents thundering herd on provider recovery
 - **Auto-Migration**: Redis SETNX leader election, no init container needed
 - **Cursor-Based Pagination**: consistent performance regardless of offset depth
+- **API Key Authentication**: timing-safe comparison via `subtle.ConstantTimeCompare`, optional per environment
+- **WebSocket Security**: per-request origin validation, ping/pong heartbeat (30s/60s), max 1000 connections
+- **Template Caching**: compiled templates cached in `sync.Map`, `html/template` for XSS safety
+- **Ack-After-Side-Effects**: consumer ACKs stream messages only after all status updates and side effects complete
+- **Bounded Contexts**: all background operations use `context.WithTimeout` — no unbounded `context.Background()` calls
+- **Sentinel Errors**: `errors.Is()` for error classification instead of string matching
 
 ## Alerting Rules
 

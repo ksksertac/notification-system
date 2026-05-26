@@ -5,15 +5,18 @@ HTTP API microservice for the Event-Driven Notification System.
 ## Responsibilities
 
 - REST API for notification CRUD, batch creation, cancellation, listing
+- **API Key Authentication** (`X-API-Key` header, timing-safe `subtle.ConstantTimeCompare`)
 - Idempotency via `Idempotency-Key` header (Redis key `idx:idempotency:{key}` with 24h TTL)
 - Input validation (E.164 phone, email format, push token, content length)
 - Cursor-based pagination with filters (status, channel, date range)
-- Write buffer for batch coalescing under high load (batches Redis HSET operations)
+- Write buffer for batch coalescing under high load (30s flush timeout)
 - Global rate limiting (Redis sliding window, 1000 req/s across all pods)
-- WebSocket real-time status updates
+- **WebSocket** real-time status updates (origin validation, ping/pong heartbeat 30s/60s, max 1000 connections)
 - Swagger/OpenAPI documentation
-- Prometheus metrics + structured JSON logging
-- Health check endpoint (Redis)
+- Prometheus metrics (custom registry, route template labels) + structured JSON logging
+- Health check endpoint (Redis + PostgreSQL)
+- **Sentinel errors** (`ErrValidation`, `ErrNotFound`, `ErrConflict`, `ErrConcurrentModification`) with `errors.Is()`
+- **Correlation ID validation** (max 64 chars, alphanumeric + hyphens)
 
 ## Endpoints
 
@@ -25,7 +28,7 @@ HTTP API microservice for the Event-Driven Notification System.
 | GET | `/api/v1/notifications/{id}` | Get by ID |
 | GET | `/api/v1/notifications/batch/{batchId}` | Get batch |
 | PATCH | `/api/v1/notifications/{id}/cancel` | Cancel notification |
-| GET | `/health` | Health check (Redis) |
+| GET | `/health` | Health check (Redis + PostgreSQL) |
 | GET | `/metrics` | Prometheus metrics |
 | GET | `/ws` | WebSocket status updates |
 | GET | `/swagger/*` | Swagger UI |
@@ -142,5 +145,10 @@ API is fully stateless — any pod handles any request. No shared state, no coor
 Rate limiting uses a global Redis Lua script (sliding window) — works correctly across all pods without per-pod counters.
 
 ## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_KEY` | _(empty — auth disabled)_ | API key for `/api/v1/*` routes. When set, all API requests must include `X-API-Key` header |
+| `WS_ALLOWED_ORIGINS` | _(empty — all origins)_ | Comma-separated list of allowed WebSocket origins (e.g., `https://example.com,https://app.example.com`) |
 
 See [.env.example](.env.example) for all configuration options.

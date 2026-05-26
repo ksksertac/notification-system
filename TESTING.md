@@ -17,7 +17,7 @@ This document covers the testing approach for the notification system, including
 
 - **Unit tests**: Fast, isolated, no external dependencies. Cover domain logic, validation, serialization, and state machines.
 - **Integration tests**: Test a single service with real Redis (miniredis or Docker). Cover stream operations, Lua scripts, consumer groups.
-- **End-to-end tests**: Spin up all services, test full notification lifecycle from API request to delivery confirmation.
+- **End-to-end tests**: Wire up real handlers, services, repositories, and middleware against miniredis. Test full notification lifecycle from HTTP request through to Redis state verification. No mocks — real code paths.
 
 ---
 
@@ -154,18 +154,18 @@ go test -tags=e2e -v -run TestConsumerGroupRecovery ./tests/e2e/...
 
 ## Coverage Targets & Results
 
-All packages with business logic achieve **90%+ coverage**:
+All packages with business logic target **90%+ coverage**:
 
 | Package | Coverage | Test Approach |
 |---------|----------|---------------|
-| `shared/domain` | 98.4% | Pure unit tests (validation, DTOs, state machine) |
-| `shared/repository` | 97.7% | miniredis (Redis) + sqlmock (PostgreSQL) |
-| `notification-api/handler` | 100% | httptest + mock service |
-| `notification-api/service` | 97.8% | Mock repository + mock publisher |
-| `notification-consumer/delivery` | 95.2% | miniredis (rate limiter, CB) + httptest (webhook) |
-| `notification-consumer/template` | 92.3% | Pure unit tests |
-| `notification-consumer/worker` | 99.2% | Full mock stack (repo, publisher, provider, CB, rate limiter) |
-| `notification-scheduler/scheduler` | 97.4% | Mock repo + mock publisher |
+| `shared/domain` | 98.4% | Pure unit tests (validation, DTOs, state machine, ValidateTransition) |
+| `shared/repository` | 97.7% | miniredis (Redis Lua scripts, CAS, atomic indexes) + sqlmock (PostgreSQL) |
+| `notification-api/handler` | 100% | httptest + mock service, sentinel error classification |
+| `notification-api/service` | 97.8% | Mock repository + mock publisher, sentinel errors (ErrValidation, ErrNotFound, etc.) |
+| `notification-consumer/delivery` | 95.2% | miniredis (rate limiter, CB Redis-backed with 500ms timeouts) + httptest (webhook) |
+| `notification-consumer/template` | 92.3% | Pure unit tests (html/template with sync.Map cache) |
+| `notification-consumer/worker` | 99.2% | Full mock stack — ack-after-side-effects, CAS validation, reEnqueue WaitGroup tracking |
+| `notification-scheduler/scheduler` | 97.4% | Mock repo + mock publisher, configurable thresholds, MetricsRecorder interface |
 
 Generate coverage report:
 ```bash
@@ -181,36 +181,44 @@ go tool cover -func=coverage.out | grep total
 
 | Component | What We Test |
 |-----------|-------------|
-| Handlers | Request parsing, response format, status codes, error responses |
+| Handlers | Request parsing, response format, status codes, sentinel error classification (`errors.Is`) |
 | Validation | Required fields, channel enum, priority enum, template existence |
-| Write Buffer | Batching behavior, flush on threshold, flush on interval, ordering |
+| Auth Middleware | API key presence, timing-safe comparison, 401 on invalid/missing key |
+| Write Buffer | Batching behavior, flush with 30s context timeout, ordering |
 | Rate Limiter | Per-user limits, global limits, sliding window accuracy, burst handling |
 | Idempotency | Same key returns same response, expiry after 24h, concurrent same-key |
+| WebSocket | Origin validation against allowlist, ping/pong heartbeat, connection limit |
+| Correlation ID | Validation (max 64 chars, alphanumeric + hyphens), replacement of invalid IDs |
+| Health | Redis + PostgreSQL ping (when available) |
+| Metrics | Custom Prometheus registry (no global conflicts), route template labels |
 
 ### Consumer Service
 
 | Component | What We Test |
 |-----------|-------------|
-| Circuit Breaker (in-memory) | Opens after N failures, half-open probe, closes on success, state callbacks, invalid state handling |
-| Circuit Breaker (Redis-backed) | Full lifecycle, shared state across instances, half-open max, fail-open on Redis down |
+| Circuit Breaker (in-memory) | Opens after N failures, half-open probe, closes on success, state callbacks, slog logging on state change |
+| Circuit Breaker (Redis-backed) | Full lifecycle, shared state across instances, half-open max, fail-open on Redis down, 500ms context timeouts |
 | Rate Limiter | Sliding window limits, Redis-backed state, fail-open on Redis down |
 | Retry Logic | Exponential backoff timing, max retry count, jitter |
 | DLQ | Messages move to DLQ after max retries, permanent failures go to DLQ immediately |
 | Webhook Provider | HTTP delivery, timeout handling, non-2xx responses, retryable vs permanent errors |
-| Worker Pool | Start/stop lifecycle, rate limit re-enqueue, CB open handling, notification not found |
+| Worker Pool | Start/stop lifecycle, ack-after-side-effects, CAS validation, rate limit re-enqueue (WaitGroup tracked), CB open handling |
 | Weighted Polling | high:10 / normal:5 / low:2, starvation prevention |
 | Stale Recovery | XPENDING + XCLAIM for idle messages |
+| Template | html/template rendering with sync.Map cache, XSS safety |
 
 ### Scheduler Service
 
 | Component | What We Test |
 |-----------|-------------|
 | Claim Atomicity | Only one pod claims a notification, Lua script correctness |
-| Stuck Queued Recovery | Notifications stuck >2min as `queued` are reset and re-published to stream |
-| Stuck Processing Recovery | Notifications stuck >2min as `processing` are reset and re-published |
-| Orphaned Pending Recovery | Instant notifications stuck >30s as `pending` are published to stream |
+| Stuck Queued Recovery | Notifications stuck >threshold as `queued` are reset and re-published to stream |
+| Stuck Processing Recovery | Notifications stuck >threshold as `processing` are reset and re-published |
+| Orphaned Pending Recovery | Instant notifications stuck >orphanThreshold as `pending` are published to stream |
 | Retry Recovery | Failed notifications in `idx:retry` are re-enqueued when backoff delay expires |
 | Batch Publishing | Notifications published in correct batch size via Redis Pipeline |
+| Configurable Thresholds | `Config` struct with stuckThreshold, recoveryInterval, retryInterval, orphanThreshold |
+| MetricsRecorder | RecordClaimed, RecordRecovered, RecordRetryReady interface |
 | Start/Stop Lifecycle | Graceful shutdown, all goroutines exit cleanly |
 | Error Handling | Recovery errors don't crash the scheduler, publish errors are logged |
 
@@ -219,9 +227,10 @@ go tool cover -func=coverage.out | grep total
 | Component | What We Test |
 |-----------|-------------|
 | Batch Coalescing | Multiple updates to same ID coalesce into one write |
-| Cleanup | Old hot-tier data moves to cold after TTL |
-| Consumer Group | Acknowledges only after successful write, replays on failure |
+| Cleanup | Two-phase pipeline eviction (phase 1: Exists+HGetAll, phase 2: eviction commands) |
+| Consumer Group | Acknowledges only after successful flush (flush returns error), replays on failure |
 | Ordering | Final state is correct regardless of event arrival order |
+| Error Handling | `readBatch()` logs real errors, `flushUpdates` accepts and uses context |
 
 ---
 
@@ -288,20 +297,22 @@ PRs are blocked from merging unless all checks pass.
 
 ## E2E Test Scenarios
 
-The following scenarios are tested in `tests/e2e/notification_flow_test.go`:
+The E2E tests (`tests/e2e/notification_flow_test.go`) use **real handlers, services, repositories, and middleware** wired up against miniredis — no mocks. Each test creates a full `testEnv` with a Chi router, real service layer, real Redis repository, and real middleware stack (correlation ID, rate limiting, logging, body size limit).
 
 | # | Scenario | What It Validates |
 |---|----------|-------------------|
-| 1 | Full notification lifecycle | API create -> scheduler claim -> consumer deliver -> status=delivered |
-| 2 | Batch creation flow | POST /batch creates N notifications, all appear in pending stream |
-| 3 | Scheduled notification flow | scheduledAt in future -> wait -> scheduler picks up -> delivers |
-| 4 | Retry + DLQ flow | Provider failure -> 3 retries with backoff -> moved to DLQ |
-| 5 | Idempotency | Same idempotency key returns same notification ID, no duplicates |
-| 6 | Rate limiting | Send > 1000 requests/sec, verify 429 responses are returned |
-| 7 | Race condition (idempotency) | 50 goroutines with same key simultaneously, all get same ID |
-| 8 | Cancel flow | Create pending -> cancel -> verify cancelled -> double-cancel returns 409 |
-| 9 | Tiered read | Create notification -> move to cold storage -> verify cold read works |
-| 10 | Status transition CAS | 20 concurrent CAS attempts, exactly 1 succeeds |
+| 1 | Full notification lifecycle | HTTP POST → Redis create (atomic Lua) → verify pending status → verify all indexes |
+| 2 | Batch creation flow | POST /batch creates N notifications, all stored in Redis with batch index |
+| 3 | Scheduled notification flow | scheduledAt in future → stored in schedule:pending sorted set with correct score |
+| 4 | Idempotency | Same Idempotency-Key returns same notification ID, second request returns existing |
+| 5 | Rate limiting | Send > limit requests, verify 429 responses with Retry-After header |
+| 6 | Race condition (idempotency) | 50 goroutines with same key simultaneously, all get same ID, exactly 1 creates |
+| 7 | Cancel flow | Create → cancel → verify cancelled status → double-cancel returns 409 Conflict |
+| 8 | Status transition CAS | 20 concurrent CAS attempts on same notification, exactly 1 succeeds |
+| 9 | Get by ID | Create notification, GET /notifications/{id}, verify all fields match |
+| 10 | Get by batch ID | Create batch, GET /notifications/batch/{batchId}, verify all batch members returned |
+| 11 | Health endpoint | GET /health returns 200 with Redis status |
+| 12 | Validation errors | Invalid channel, missing recipient, bad phone format → proper 400 error codes |
 
 ### Running Individual Scenarios
 
@@ -310,13 +321,15 @@ The following scenarios are tested in `tests/e2e/notification_flow_test.go`:
 go test -tags=e2e -v -run TestFullNotificationLifecycle ./tests/e2e/...
 go test -tags=e2e -v -run TestBatchCreationFlow ./tests/e2e/...
 go test -tags=e2e -v -run TestScheduledNotificationFlow ./tests/e2e/...
-go test -tags=e2e -v -run TestRetryAndDLQFlow ./tests/e2e/...
 go test -tags=e2e -v -run TestIdempotency ./tests/e2e/...
 go test -tags=e2e -v -run TestRateLimiting ./tests/e2e/...
 go test -tags=e2e -v -run TestRaceConditionIdempotency ./tests/e2e/...
 go test -tags=e2e -v -run TestCancelFlow ./tests/e2e/...
-go test -tags=e2e -v -run TestTieredRead ./tests/e2e/...
 go test -tags=e2e -v -run TestStatusTransitionCAS ./tests/e2e/...
+go test -tags=e2e -v -run TestGetByID ./tests/e2e/...
+go test -tags=e2e -v -run TestGetByBatchID ./tests/e2e/...
+go test -tags=e2e -v -run TestHealthEndpoint ./tests/e2e/...
+go test -tags=e2e -v -run TestValidationErrors ./tests/e2e/...
 ```
 
 ---

@@ -8,12 +8,15 @@ Queue worker microservice for the Event-Driven Notification System.
 - Read notification details from Redis Hash (`notification:{id}`)
 - Deliver messages through external provider (webhook.site)
 - Rate limiting per channel (sliding window, 100/s default)
-- Circuit breaker per channel (5 failures -> open 30s -> half-open probe)
+- Circuit breaker per channel (5 failures -> open 30s -> half-open probe, Redis-backed distributed state with 500ms context timeouts)
 - Exponential backoff with jitter for retries
 - Dead Letter Queue for permanently failed notifications (stored as Redis Hash `dlq:{notification_id}`)
-- Template rendering with Go text/template
+- Template rendering with `html/template` (XSS-safe) and `sync.Map` template cache
+- **Ack-after-side-effects**: stream messages acknowledged only after all status updates and delivery side effects complete
+- **CAS validation**: worker checks `UpdateStatus` return value — if CAS fails (concurrent update), message is acked and skipped
+- **Goroutine safety**: `reEnqueue` goroutines tracked by WaitGroup with bounded publish context (5s timeout)
 - Stale message recovery via XPENDING + XCLAIM
-- Prometheus metrics (delivery rate, failure rate, latency, CB/rate limit events)
+- Prometheus metrics (custom registry, delivery rate, failure rate, latency, CB/rate limit events)
 
 ## Weighted Polling
 

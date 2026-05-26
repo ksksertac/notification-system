@@ -125,10 +125,26 @@ pipe.Exec(ctx)           // single round trip for all 500
 
 ## Configuration
 
+All thresholds are configurable via environment variables or the `Config` struct:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SCHEDULER_POLL_INTERVAL` | `5s` | How often to check for ready notifications |
 | `SCHEDULER_BATCH_SIZE` | `500` | Notifications to claim per cycle |
+| `SCHEDULER_STUCK_THRESHOLD` | `2m` | How long a queued/processing notification waits before recovery |
+| `SCHEDULER_RECOVERY_INTERVAL` | `30s` | How often the recovery loop runs |
+| `SCHEDULER_RETRY_INTERVAL` | `10s` | How often the retry recovery loop runs |
+| `SCHEDULER_ORPHAN_THRESHOLD` | `30s` | How long an instant pending notification waits before recovery |
+
+### Metrics (optional)
+
+The scheduler accepts an optional `MetricsRecorder` interface:
+
+| Method | When called |
+|--------|------------|
+| `RecordClaimed(count int)` | After claiming a batch of scheduled notifications |
+| `RecordRecovered(count int)` | After recovering stuck notifications |
+| `RecordRetryReady(count int)` | After re-enqueuing retry-ready notifications |
 
 See [.env.example](.env.example) for all configuration options.
 

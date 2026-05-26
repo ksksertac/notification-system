@@ -8,8 +8,10 @@ Async persistence service for the Event-Driven Notification System. Drains the R
 - Batch INSERT notifications and status updates to PostgreSQL
 - Replay status transitions (pending -> queued -> delivered/failed) in order
 - Persist DLQ entries for audit and analysis
-- **Cleanup job**: evict Redis entries older than 1 hour (Hash + all sorted set indexes) to keep RAM bounded
+- **ACK-after-flush**: messages acknowledged only after successful PostgreSQL write (`flush()` returns error)
+- **Cleanup job**: two-phase pipeline eviction of Redis entries older than 1 hour (phase 1: Exists+HGetAll, phase 2: eviction commands)
 - Auto-migration via Redis leader election (only one pod migrates)
+- Proper error handling: `readBatch()` logs real errors, `flushUpdates` accepts and uses context
 
 ## How It Works
 

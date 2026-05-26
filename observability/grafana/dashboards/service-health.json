@@ -1,0 +1,317 @@
+{
+  "dashboard": {
+    "title": "Service Health & Resources",
+    "uid": "service-health",
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-1h", "to": "now" },
+    "templating": {
+      "list": [
+        {
+          "name": "job",
+          "type": "query",
+          "datasource": "Prometheus",
+          "query": "label_values(up, job)",
+          "multi": true,
+          "includeAll": true,
+          "current": { "text": "All", "value": "$__all" },
+          "refresh": 1
+        }
+      ]
+    },
+    "panels": [
+      {
+        "title": "Service Status",
+        "type": "row",
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+        "collapsed": false
+      },
+      {
+        "title": "Service Up / Down",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 8, "x": 0, "y": 1 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "up{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "red" },
+                { "value": 1, "color": "green" }
+              ]
+            }
+          }
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" }
+      },
+      {
+        "title": "Total Goroutines",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "sum(go_goroutines{job=~\"$job\"})",
+            "legendFormat": "goroutines"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 500, "color": "yellow" },
+                { "value": 1000, "color": "red" }
+              ]
+            }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area" }
+      },
+      {
+        "title": "Total Memory (RSS)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "sum(process_resident_memory_bytes{job=~\"$job\"})",
+            "legendFormat": "RSS"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 536870912, "color": "yellow" },
+                { "value": 1073741824, "color": "red" }
+              ]
+            }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area" }
+      },
+      {
+        "title": "Total CPU Usage",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "sum(rate(process_cpu_seconds_total{job=~\"$job\"}[1m]))",
+            "legendFormat": "CPU cores"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "decimals": 3,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 0.8, "color": "yellow" },
+                { "value": 1.5, "color": "red" }
+              ]
+            }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area" }
+      },
+      {
+        "title": "Open File Descriptors",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "sum(process_open_fds{job=~\"$job\"})",
+            "legendFormat": "FDs"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 500, "color": "yellow" },
+                { "value": 900, "color": "red" }
+              ]
+            }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area" }
+      },
+      {
+        "title": "CPU & Memory",
+        "type": "row",
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+        "collapsed": false
+      },
+      {
+        "title": "CPU Usage (cores)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(process_cpu_seconds_total{job=~\"$job\"}[1m])",
+            "legendFormat": "{{job}} — {{instance}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": { "fillOpacity": 15, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      },
+      {
+        "title": "Memory (RSS)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "process_resident_memory_bytes{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} RSS"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": { "fillOpacity": 15, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      },
+      {
+        "title": "Go Heap Memory",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "go_memstats_heap_alloc_bytes{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} heap alloc"
+          },
+          {
+            "expr": "go_memstats_heap_inuse_bytes{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} heap in-use"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      },
+      {
+        "title": "Go Memory Stats",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "go_memstats_alloc_bytes{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} alloc"
+          },
+          {
+            "expr": "go_memstats_sys_bytes{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} sys"
+          },
+          {
+            "expr": "go_memstats_stack_inuse_bytes{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} stack"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      },
+      {
+        "title": "Go Runtime",
+        "type": "row",
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+        "collapsed": false
+      },
+      {
+        "title": "Goroutines",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 23 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "go_goroutines{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": { "fillOpacity": 15, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      },
+      {
+        "title": "GC Duration (p99)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 23 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "go_gc_duration_seconds{job=~\"$job\", quantile=\"0.99\"}",
+            "legendFormat": "{{job}} — {{instance}} p99"
+          },
+          {
+            "expr": "go_gc_duration_seconds{job=~\"$job\", quantile=\"0.5\"}",
+            "legendFormat": "{{job}} — {{instance}} p50"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      },
+      {
+        "title": "Threads & File Descriptors",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 23 },
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "go_threads{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} threads"
+          },
+          {
+            "expr": "process_open_fds{job=~\"$job\"}",
+            "legendFormat": "{{job}} — {{instance}} open FDs"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "drawStyle": "line", "showPoints": "never" }
+          }
+        }
+      }
+    ]
+  }
+}

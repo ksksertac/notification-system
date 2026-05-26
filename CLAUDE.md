@@ -16,9 +16,10 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 
 - **Architecture Design**: Evaluated trade-offs between pure PostgreSQL, pure Redis, and hybrid approaches. Chose Redis-first with hot/cold tiering based on latency and throughput requirements.
 - **Code Generation**: All Go microservices written with Claude — domain models, Redis Lua scripts, pipeline optimizations, circuit breakers, rate limiters.
-- **Code Review**: Full codebase review identified critical bugs (unchecked errors, unused Lua parameters, dead code). All fixed.
+- **Code Review**: Two-pass review. First pass identified 35 issues; second pass found and fixed 34 additional issues (Lua atomicity, TOCTOU races, ack ordering, security hardening, bounded contexts).
+- **Security Hardening**: API key auth, WebSocket origin validation + heartbeat + connection limits, html/template for XSS safety, correlation ID validation.
 - **Documentation**: README files, architecture diagrams, and this plan document maintained throughout development.
-- **Refactoring**: Migrator moved from API to dbwriter, dead code removed, go.mod versions aligned — all AI-guided.
+- **Refactoring**: Migrator moved from API to dbwriter, dead code removed, go.mod versions aligned, sentinel errors, custom Prometheus registries — all AI-guided.
 
 ## Key Commands Used
 
@@ -32,10 +33,10 @@ claude "move migrator from API to dbwriter"
 
 ## Testing Strategy
 
-- **Unit tests**: domain, handlers, service, circuit breaker, retry, template
-- **Integration tests**: Redis repository via miniredis (Lua script atomicity, sorted set indexes, CAS)
+- **Unit tests**: domain, handlers (sentinel errors), service, circuit breaker, retry, template (html/template + sync.Map cache)
+- **Integration tests**: Redis repository via miniredis (atomic Lua scripts, sorted set indexes, CAS, IncrementRetry)
 - **Race condition tests**: concurrent pod claim simulation, concurrent status CAS, idempotency under concurrency
-- **E2E tests**: full notification lifecycle (create → schedule → deliver → DLQ)
+- **E2E tests (12 scenarios)**: real handlers, services, repositories, middleware wired against miniredis — no mocks. Tests: lifecycle, batch, scheduled, idempotency, rate limiting, race condition, cancel, CAS, getByID, getByBatchID, health, validation
 - **SonarCloud**: continuous quality gate on every PR (see `sonar-project.properties`)
 - **Run**: `go test ./...` per module, `go test -tags=e2e ./tests/e2e/...` for E2E
 - **See**: `TESTING.md` for full strategy and commands
@@ -46,7 +47,10 @@ claude "move migrator from API to dbwriter"
 - All services share code via `shared/` module with `replace` directive
 - Redis is the primary data store; PostgreSQL is cold storage only
 - Every Redis write publishes to `persist:queue` for async PostgreSQL persistence
-- Lua scripts for all atomic operations (CAS, claim, recovery)
+- Lua scripts for all atomic operations (CAS, claim, recovery, create, incrementRetry)
 - No `.env` files in repo — only `.env.example`
-- Structured JSON logging, Prometheus metrics on all services
+- Structured JSON logging, Prometheus metrics (custom registries) on all services
+- Sentinel errors with `errors.Is()` in API service
+- All background operations use `context.WithTimeout` (no unbounded contexts)
+- Stream messages ACK'd only after all side effects complete
 - Docker multi-stage builds, GitHub Actions CI per service

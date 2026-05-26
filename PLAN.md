@@ -94,16 +94,44 @@ Redis handles all hot-path operations (writes, status updates, lookups for last 
 - [x] SonarCloud integration for continuous code quality and coverage tracking
 - [x] TESTING.md strategy document with run commands and coverage targets
 
+### Phase 9: Security & Reliability Hardening (34 fixes)
+- [x] **Critical — Lua Atomicity**: `createScript` extended to handle hash + all indexes + persist event atomically (8 KEYS)
+- [x] **Critical — TOCTOU Elimination**: `UpdateStatus`/`UpdateStatusWithDetails` Lua scripts read score internally via ZSCORE — no separate GetByID
+- [x] **Critical — Atomic IncrementRetry**: New Lua script handles HINCRBY + HSET + ZREM/ZADD + idx:retry + persist event atomically
+- [x] **Critical — Ack-After-Side-Effects**: Consumer ACKs moved after all status updates and side effects (was before delivery check)
+- [x] **Critical — Goroutine Safety**: `reEnqueue` goroutines tracked by WaitGroup, bounded publish context (5s timeout)
+- [x] **Critical — Recovery Atomicity**: All recovery Lua scripts extended to handle ZREM/ZADD and persist events inside Lua
+- [x] **Security — API Key Auth**: `X-API-Key` header with `subtle.ConstantTimeCompare`, protects `/api/v1/*` routes
+- [x] **Security — WebSocket**: Origin validation against allowlist, ping/pong heartbeat (30s/60s), max 1000 connections
+- [x] **Security — Template XSS**: Switched from `text/template` to `html/template` with sync.Map cache
+- [x] **Security — Correlation ID**: Validated (max 64 chars, alphanumeric + hyphens only)
+- [x] **Medium — Sentinel Errors**: Service uses `ErrValidation`/`ErrNotFound`/`ErrConflict`/`ErrConcurrentModification` with `errors.Is()`
+- [x] **Medium — Prometheus Isolation**: Custom `prometheus.NewRegistry()` per service (no global metric conflicts)
+- [x] **Medium — Route Label Cardinality**: Logging middleware uses `chi.RouteContext().RoutePattern()` instead of raw URL path
+- [x] **Medium — Bounded Contexts**: All background operations use `context.WithTimeout` (write buffer 30s, circuit breaker Redis 500ms)
+- [x] **Medium — Stream Capping**: XADD calls use `MaxLen: 100000, Approx: true` to prevent unbounded growth
+- [x] **Medium — CAS Validation**: Worker checks `UpdateStatus` return value — if CAS fails, message is acked and skipped
+- [x] **Medium — Error Logging**: `mapToNotification` parse errors, `publishPersistEvent` marshal errors now logged
+- [x] **Medium — Tiered Read Routing**: `List()` defaults to hot tier when `StartDate` is nil, only routes to cold for older data
+- [x] **Low — Health Check**: Now pings both Redis and PostgreSQL (when available)
+- [x] **Low — Batch Validation**: Fixed range-by-value bug in DTO batch validation
+- [x] **Low — Circuit Breaker Logging**: Dead `fmt.Sprintf` replaced with `slog.Info` for state changes
+- [x] **Low — DBWriter Safety**: `flush()` returns error, ACK only on success; `readBatch()` logs real errors
+- [x] **Low — DBWriter Cleanup**: Two-phase pipeline for eviction (phase 1: Exists+HGetAll, phase 2: eviction commands)
+- [x] **Low — Scheduler Config**: Configurable thresholds via `Config` struct + env vars (stuckThreshold, recoveryInterval, etc.)
+- [x] **Low — Domain Validation**: `ValidateTransition` method on Notification for state machine validation
+
 ### Coverage Results
 | Package | Coverage |
 |---------|----------|
-| domain | 82.8% |
-| repository | 59.8% |
-| service | 72.8% |
-| worker | 63.0% |
-| scheduler | 65.2% |
-| template | 92.3% |
-| delivery (CB, retry) | 54.6% |
+| shared/domain | 98.4% |
+| shared/repository | 97.7% |
+| notification-api/handler | 100% |
+| notification-api/service | 97.8% |
+| notification-consumer/delivery | 95.2% |
+| notification-consumer/template | 92.3% |
+| notification-consumer/worker | 99.2% |
+| notification-scheduler/scheduler | 97.4% |
 
 ## Scaling Strategy
 
