@@ -79,7 +79,7 @@ func (p *webhookProvider) Send(ctx context.Context, recipient string, channel st
 
 	var webhookResp webhookResponse
 	if err := json.Unmarshal(respBody, &webhookResp); err != nil {
-		return &SendResult{Retryable: false}, nil
+		return &SendResult{Retryable: false}, fmt.Errorf("parsing response: %w", err)
 	}
 
 	return &SendResult{
