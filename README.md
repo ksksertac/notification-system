@@ -249,7 +249,9 @@ All critical Redis operations are performed via Lua scripts to ensure atomicity:
 | **Create** | Idempotency key check + HSET + all index updates (status, channel, created_at, batch, idempotency, schedule) + persist event — single atomic operation, prevents duplicate creation under concurrent requests with same idempotency key |
 | **UpdateStatus (CAS)** | Read current status + read score from idx:created_at + HSET + ZREM/ZADD status indexes + persist event |
 | **IncrementRetry** | HINCRBY retry_count + HSET next fields + ZREM/ZADD status indexes + ZADD idx:retry + persist event |
-| **Recovery scripts** | Status reset + ZREM/ZADD index updates + persist event — all inside one Lua call |
+| **MoveToDLQ** | Update notification status + create DLQ hash entry + ZREM/ZADD status indexes + persist event — all atomic |
+| **GetRetryReady** | Scan idx:retry + CAS check (status must be 'failed') + transition to 'queued' + ZREM from retry/failed indexes + ZADD queued index + persist event — prevents double-claiming by multiple scheduler pods |
+| **Recovery scripts** | Status reset + `updated_at` comparison against cutoff (not just `created_at` score) + ZREM/ZADD index updates + persist event — correctly skips recently re-queued notifications |
 
 This eliminates TOCTOU (time-of-check-time-of-use) race conditions that existed when these operations were split across multiple Redis commands.
 
@@ -357,7 +359,8 @@ Without buffer:  1000 requests → 1000 HSET commands → 1000 Redis round trips
 With buffer:     1000 requests → 2 pipeline HSETs (500 each) → 2 Redis round trips
 ```
 
-- Requests with `Idempotency-Key` check `idx:idempotency:{key}` (String with 24h TTL) for duplicate detection
+- `CreateBatch` pre-loads the Lua script SHA and runs up to 50 concurrent goroutines — 1000-item batch completes in ~20ms instead of ~500ms sequential
+- Requests with `Idempotency-Key` check `idx:idempotency:{key}` (String with 24h TTL) for duplicate detection (supported on both single and batch create)
 - Buffer flushes on **size threshold** (500 items) or **time threshold** (50ms) — whichever comes first
 - Each waiting handler gets its result via a dedicated channel — no polling
 
@@ -441,7 +444,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 | API Docs | Swagger (swaggo) |
 | Metrics | Prometheus (custom registries) + Grafana |
 | Logging | Structured JSON + Loki + Promtail |
-| Tracing | Jaeger (correlation ID propagation via Redis Streams) |
+| Tracing | OpenTelemetry SDK (OTLP/HTTP exporter) + Jaeger UI — spans + correlation ID propagation |
 | Alerting | Alertmanager (Slack/Teams webhook) |
 | CI/CD | GitHub Actions (per service) |
 
@@ -465,8 +468,8 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **WebSocket Security**: per-request origin validation, ping/pong heartbeat (30s/60s), max 1000 connections
 - **Template Caching**: compiled templates cached in `sync.Map`, `html/template` for XSS safety
 - **Atomic Idempotency**: Lua `createScript` checks the idempotency key (`GET`) before writing — prevents duplicate notifications under concurrent requests with the same key (eliminates TOCTOU race between `GetByIdempotencyKey` and `Create`)
-- **Distributed Tracing**: Correlation ID propagated from API → Redis Stream messages → Consumer logs via `shared/tracing` package. Jaeger collects traces for cross-service visibility
-- **Bounded Re-enqueue**: Semaphore channel (`WorkerCount*2`) limits concurrent re-enqueue goroutines — prevents goroutine leak under sustained rate limiting or circuit breaker open states
+- **Distributed Tracing**: Full OpenTelemetry SDK integration (OTLP/HTTP exporter → Jaeger). All 4 services initialize `tracing.InitTracer()` at startup. API uses `otelhttp` middleware for automatic span creation. Correlation ID propagated via Redis Stream messages for log-to-trace correlation
+- **Bounded Re-enqueue**: Semaphore channel (`WorkerCount*2`) limits concurrent re-enqueue goroutines — prevents goroutine leak under sustained rate limiting or circuit breaker open states. When semaphore is full, notification status is reverted to `queued` for recovery loop pickup
 - **Provider Response Limit**: `io.LimitReader(resp.Body, 1MB)` prevents memory exhaustion from oversized provider responses
 - **Ack-After-Side-Effects**: consumer ACKs stream messages only after all status updates and side effects complete
 - **Bounded Contexts**: all background operations use `context.WithTimeout` — no unbounded `context.Background()` calls
@@ -493,7 +496,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 │   ├── domain/                  # Entities, DTOs, validation, state machine
 │   ├── queue/                   # Redis Streams publisher/consumer/pipeline
 │   ├── repository/              # Notification repository (Redis-backed)
-│   └── tracing/                 # Shared correlation ID context key for cross-service tracing
+│   └── tracing/                 # OpenTelemetry SDK init, HTTP middleware, correlation ID context
 │
 ├── notification-api/            # API microservice
 │   ├── Dockerfile

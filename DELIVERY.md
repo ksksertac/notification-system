@@ -135,7 +135,7 @@ Notifications enter the DLQ under two conditions:
 
 DLQ entries are stored in two locations for durability:
 
-- **Redis**: `dlq:{notification_id}` hash containing the original notification data, error message, retry count, and failure timestamp
+- **Redis**: `dlq:{notification_id}` hash containing the original notification data, error message, retry count, and failure timestamp. The `MoveToDLQ` operation is a single atomic Lua script — it updates the notification status, creates the DLQ hash entry, moves status indexes, and publishes the persist event in one call, preventing inconsistent state on partial failure
 - **PostgreSQL**: `dead_letter_queue` table, persisted asynchronously via the `persist:queue` stream
 
 ### DLQ Entry Fields

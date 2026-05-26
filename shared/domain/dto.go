@@ -12,12 +12,13 @@ import (
 var phoneRegex = regexp.MustCompile(`^\+[1-9]\d{6,14}$`)
 
 type CreateNotificationRequest struct {
-	Recipient   string          `json:"recipient"`
-	Channel     string          `json:"channel"`
-	Content     string          `json:"content"`
-	Priority    string          `json:"priority"`
-	ScheduledAt *time.Time      `json:"scheduled_at,omitempty"`
-	Metadata    map[string]any  `json:"metadata,omitempty"`
+	Recipient      string          `json:"recipient"`
+	Channel        string          `json:"channel"`
+	Content        string          `json:"content"`
+	Priority       string          `json:"priority"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	ScheduledAt    *time.Time      `json:"scheduled_at,omitempty"`
+	Metadata       map[string]any  `json:"metadata,omitempty"`
 }
 
 func (r *CreateNotificationRequest) Validate() error {

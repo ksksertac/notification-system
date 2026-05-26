@@ -12,6 +12,7 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/domain"
 	"github.com/sertacyildirim/notification-system/shared/queue"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 type WorkerPoolConfig struct {
@@ -156,6 +157,11 @@ func (wp *WorkerPool) pollStreams(ctx context.Context, consumerName string) bool
 }
 
 func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
+	ctx, span := tracing.StartSpan(ctx, "consumer.ProcessMessage")
+	defer span.End()
+	tracing.SetNotificationAttrs(span, msg.NotificationID.String(), string(msg.Channel), "")
+	tracing.SetAttr(span, "queue.stream", msg.StreamName)
+
 	startTime := time.Now()
 	logger := wp.logger.With(
 		"notification_id", msg.NotificationID,
@@ -220,7 +226,13 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		}
 	}
 
-	result, sendErr := wp.provider.Send(ctx, msg.Recipient, string(msg.Channel), content)
+	sendCtx, sendSpan := tracing.StartSpan(ctx, "provider.Send")
+	tracing.SetAttr(sendSpan, "provider.channel", string(msg.Channel))
+	result, sendErr := wp.provider.Send(sendCtx, msg.Recipient, string(msg.Channel), content)
+	if sendErr != nil {
+		tracing.RecordError(sendSpan, sendErr)
+	}
+	sendSpan.End()
 
 	if sendErr != nil {
 		cb.RecordFailure()
@@ -240,7 +252,12 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 	}
 
 	providerID := result.ProviderMsgID
-	wp.repo.UpdateStatusWithDetails(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusDelivered, &providerID, nil)
+	updated, updateErr := wp.repo.UpdateStatusWithDetails(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusDelivered, &providerID, nil)
+	if updateErr != nil {
+		logger.Error("failed to update status to delivered", "error", updateErr)
+	} else if !updated {
+		logger.Warn("status update to delivered failed, status may have changed concurrently")
+	}
 
 	if wp.broadcaster != nil {
 		wp.broadcaster.Broadcast(msg.NotificationID, domain.StatusDelivered)
@@ -290,7 +307,8 @@ func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification) {
 	select {
 	case wp.requeueSem <- struct{}{}:
 	default:
-		wp.logger.Warn("requeue semaphore full, dropping re-enqueue", "notification_id", n.ID)
+		wp.logger.Warn("requeue semaphore full, reverting status for recovery", "notification_id", n.ID)
+		wp.repo.UpdateStatus(ctx, n.ID, domain.StatusProcessing, domain.StatusQueued)
 		return
 	}
 

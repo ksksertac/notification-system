@@ -19,6 +19,11 @@ func NewRedisPublisher(client *redis.Client) Publisher {
 }
 
 func (p *redisStreamPublisher) Publish(ctx context.Context, n *domain.Notification) error {
+	ctx, span := tracing.StartSpan(ctx, "queue.Publish")
+	defer span.End()
+	tracing.SetNotificationAttrs(span, n.ID.String(), string(n.Channel), string(n.Status))
+	tracing.SetAttr(span, "queue.stream", StreamForPriority(n.Priority))
+
 	stream := StreamForPriority(n.Priority)
 
 	values := map[string]interface{}{
@@ -37,10 +42,17 @@ func (p *redisStreamPublisher) Publish(ctx context.Context, n *domain.Notificati
 		Stream: stream,
 		Values: values,
 	}).Result()
+	if err != nil {
+		tracing.RecordError(span, err)
+	}
 	return err
 }
 
 func (p *redisStreamPublisher) PublishBatch(ctx context.Context, notifications []*domain.Notification) error {
+	ctx, span := tracing.StartSpan(ctx, "queue.PublishBatch")
+	defer span.End()
+	tracing.SetIntAttr(span, "batch.size", len(notifications))
+
 	pipe := p.client.Pipeline()
 
 	cid := tracing.GetCorrelationID(ctx)
@@ -64,6 +76,9 @@ func (p *redisStreamPublisher) PublishBatch(ctx context.Context, notifications [
 	}
 
 	_, err := pipe.Exec(ctx)
+	if err != nil {
+		tracing.RecordError(span, err)
+	}
 	return err
 }
 

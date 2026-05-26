@@ -12,6 +12,7 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/domain"
 	"github.com/sertacyildirim/notification-system/shared/queue"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 // Sentinel errors for structured error handling in handlers.
@@ -53,6 +54,10 @@ func NewNotificationService(repo repository.NotificationRepository, publisher qu
 }
 
 func (s *notificationService) Create(ctx context.Context, req domain.CreateNotificationRequest, idempotencyKey string) (*domain.Notification, error) {
+	ctx, span := tracing.StartSpan(ctx, "service.Create")
+	defer span.End()
+	tracing.SetAttr(span, "notification.channel", req.Channel)
+
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
 	}
@@ -131,6 +136,10 @@ func (s *notificationService) Create(ctx context.Context, req domain.CreateNotif
 }
 
 func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchCreateRequest) (*uuid.UUID, []*domain.Notification, error) {
+	ctx, span := tracing.StartSpan(ctx, "service.CreateBatch")
+	defer span.End()
+	tracing.SetIntAttr(span, "batch.size", len(req.Notifications))
+
 	if err := req.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
 	}
@@ -159,6 +168,10 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
+		}
+
+		if r.IdempotencyKey != "" {
+			n.IdempotencyKey = &r.IdempotencyKey
 		}
 
 		if r.ScheduledAt != nil {
@@ -205,6 +218,10 @@ func (s *notificationService) GetByBatchID(ctx context.Context, batchID uuid.UUI
 }
 
 func (s *notificationService) Cancel(ctx context.Context, id uuid.UUID) error {
+	ctx, span := tracing.StartSpan(ctx, "service.Cancel")
+	defer span.End()
+	tracing.SetAttr(span, "notification.id", id.String())
+
 	n, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("getting notification: %w", err)

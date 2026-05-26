@@ -1777,3 +1777,188 @@ func (t *trackingConsumer) ClaimStale(ctx context.Context, stream, group, consum
 func (t *trackingConsumer) Len(ctx context.Context, stream string) (int64, error) {
 	return t.inner.Len(ctx, stream)
 }
+
+// --- Tests for reEnqueue semaphore full status revert ---
+
+func TestReEnqueue_SemaphoreFull(t *testing.T) {
+	repo := newMockRepo()
+	publisher := &mockPublisher{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.publisher = publisher
+	})
+
+	// Fill the semaphore completely
+	for i := 0; i < cap(wp.requeueSem); i++ {
+		wp.requeueSem <- struct{}{}
+	}
+
+	n := &domain.Notification{
+		ID:       uuid.New(),
+		Status:   domain.StatusProcessing,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+	repo.mu.Lock()
+	repo.notifications[n.ID] = n
+	repo.mu.Unlock()
+
+	ctx := context.Background()
+	wp.reEnqueue(ctx, n)
+
+	// Should NOT publish (semaphore full, returns immediately)
+	time.Sleep(100 * time.Millisecond)
+	publisher.mu.Lock()
+	if len(publisher.published) != 0 {
+		t.Errorf("expected 0 published when semaphore full, got %d", len(publisher.published))
+	}
+	publisher.mu.Unlock()
+
+	// Should have reverted status from processing to queued
+	repo.mu.Lock()
+	foundRevert := false
+	for _, su := range repo.statusUpdates {
+		if su.id == n.ID && su.from == domain.StatusProcessing && su.to == domain.StatusQueued {
+			foundRevert = true
+			break
+		}
+	}
+	repo.mu.Unlock()
+	if !foundRevert {
+		t.Error("expected status revert from processing to queued when semaphore is full")
+	}
+}
+
+// --- Tests for UpdateStatusWithDetails error handling after delivery ---
+
+type updateDetailsFailRepo struct {
+	*mockRepo
+	updateErr error
+	updateOk  bool
+}
+
+func (m *updateDetailsFailRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
+	m.mockRepo.mu.Lock()
+	m.mockRepo.statusUpdates = append(m.mockRepo.statusUpdates, statusUpdate{id: id, from: from, to: to})
+	m.mockRepo.mu.Unlock()
+	return m.updateOk, m.updateErr
+}
+
+var _ repository.NotificationRepository = (*updateDetailsFailRepo)(nil)
+
+func TestProcessMessage_UpdateStatusWithDetailsError(t *testing.T) {
+	nID := uuid.New()
+	baseRepo := newMockRepo()
+	baseRepo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+
+	failRepo := &updateDetailsFailRepo{
+		mockRepo:  baseRepo,
+		updateErr: errors.New("redis connection lost"),
+		updateOk:  false,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{ProviderMsgID: "msg-abc"}, nil
+		},
+	}
+
+	consumer := &mockConsumer{}
+	broadcaster := &mockBroadcaster{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.provider = provider
+		o.consumer = consumer
+	})
+	wp.repo = failRepo
+	wp.broadcaster = broadcaster
+
+	msg := queue.Message{
+		ID:             "msg-update-err",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "user@example.com",
+		Content:        "Hello",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Even though UpdateStatusWithDetails failed, message should still be acked
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) == 0 {
+		t.Error("expected message to be acknowledged even when UpdateStatusWithDetails fails")
+	}
+	consumer.mu.Unlock()
+
+	// Broadcaster should still be called with StatusDelivered
+	broadcaster.mu.Lock()
+	foundDelivered := false
+	for _, b := range broadcaster.broadcasts {
+		if b.id == nID && b.status == domain.StatusDelivered {
+			foundDelivered = true
+			break
+		}
+	}
+	broadcaster.mu.Unlock()
+	if !foundDelivered {
+		t.Error("expected broadcaster to be called with StatusDelivered even on update error")
+	}
+}
+
+func TestProcessMessage_UpdateStatusWithDetailsCASFailure(t *testing.T) {
+	nID := uuid.New()
+	baseRepo := newMockRepo()
+	baseRepo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelSMS,
+		Priority: domain.PriorityNormal,
+	}
+
+	failRepo := &updateDetailsFailRepo{
+		mockRepo:  baseRepo,
+		updateErr: nil,
+		updateOk:  false,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{ProviderMsgID: "msg-xyz"}, nil
+		},
+	}
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.provider = provider
+		o.consumer = consumer
+	})
+	wp.repo = failRepo
+
+	msg := queue.Message{
+		ID:             "msg-cas-fail",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "CAS test",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	// Message should still be acked despite CAS failure
+	consumer.mu.Lock()
+	if len(consumer.ackCalls) == 0 {
+		t.Error("expected message to be acknowledged even when CAS fails")
+	}
+	consumer.mu.Unlock()
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/sertacyildirim/notification-system/notification-api/middleware"
 	"github.com/sertacyildirim/notification-system/notification-api/service"
 	"github.com/sertacyildirim/notification-system/shared/queue"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 	ws "github.com/sertacyildirim/notification-system/notification-api/websocket"
 )
 
@@ -29,6 +30,7 @@ func NewRouter(
 ) http.Handler {
 	r := chi.NewRouter()
 
+	r.Use(tracing.HTTPMiddleware)
 	r.Use(middleware.CorrelationID)
 	r.Use(middleware.Recovery(logger))
 	r.Use(middleware.RateLimit(redisClient, 1000))

@@ -19,6 +19,7 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/database"
 	"github.com/sertacyildirim/notification-system/shared/queue"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 // @title Notification System API
@@ -44,6 +45,14 @@ func run() error {
 
 	logger := setupLogger(cfg.Log.Level)
 	logger.Info("starting notification api")
+
+	otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	shutdownTracer, err := tracing.InitTracer(context.Background(), "notification-api", otlpEndpoint)
+	if err != nil {
+		logger.Warn("failed to init tracer, continuing without tracing", "error", err)
+	} else {
+		defer shutdownTracer(context.Background())
+	}
 
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Addr,

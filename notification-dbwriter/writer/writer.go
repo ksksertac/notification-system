@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/shared/domain"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 const (
@@ -151,6 +152,10 @@ func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) error {
 		return nil
 	}
 
+	ctx, span := tracing.StartSpan(ctx, "dbwriter.Flush")
+	defer span.End()
+	tracing.SetIntAttr(span, "flush.message_count", len(msgs))
+
 	var events []*repository.PersistEvent
 	for _, m := range msgs {
 		if m.event != nil {
@@ -179,6 +184,10 @@ func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) error {
 }
 
 func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notification) error {
+	ctx, span := tracing.StartSpan(ctx, "dbwriter.FlushCreates")
+	defer span.End()
+	tracing.SetIntAttr(span, "postgres.insert_count", len(notifications))
+
 	var lastErr error
 	for i := 0; i < len(notifications); i += w.batchSize {
 		end := i + w.batchSize
@@ -206,6 +215,10 @@ func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notif
 }
 
 func (w *Writer) flushUpdates(ctx context.Context, updates []map[string]string) error {
+	ctx, span := tracing.StartSpan(ctx, "dbwriter.FlushUpdates")
+	defer span.End()
+	tracing.SetIntAttr(span, "postgres.update_count", len(updates))
+
 	var lastErr error
 	for _, u := range updates {
 		action := u["action"]

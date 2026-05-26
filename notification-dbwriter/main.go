@@ -18,6 +18,7 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/config"
 	"github.com/sertacyildirim/notification-system/shared/database"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 func main() {
@@ -35,6 +36,14 @@ func run() error {
 
 	logger := setupLogger(cfg.Log.Level)
 	logger.Info("starting notification dbwriter")
+
+	otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	shutdownTracer, err := tracing.InitTracer(context.Background(), "notification-dbwriter", otlpEndpoint)
+	if err != nil {
+		logger.Warn("failed to init tracer, continuing without tracing", "error", err)
+	} else {
+		defer shutdownTracer(context.Background())
+	}
 
 	db, err := database.NewPostgres(cfg.DB)
 	if err != nil {

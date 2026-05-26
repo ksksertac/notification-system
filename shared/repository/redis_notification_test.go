@@ -2594,3 +2594,198 @@ func TestListWithInvalidNotificationInResults(t *testing.T) {
 		t.Errorf("expected valid notification ID")
 	}
 }
+
+// --- Tests for GetRetryReady concurrent race safety (CAS check) ---
+
+func TestGetRetryReadyConcurrentRace(t *testing.T) {
+	repo, _, _ := setupTestRepo(t)
+	ctx := context.Background()
+
+	numNotifications := 10
+
+	for i := 0; i < numNotifications; i++ {
+		n := newRedisTestNotification(func(n *domain.Notification) {
+			n.Status = domain.StatusProcessing
+			n.CreatedAt = n.CreatedAt.Add(time.Duration(i) * time.Millisecond)
+		})
+		if err := repo.Create(ctx, n); err != nil {
+			t.Fatalf("Create[%d] failed: %v", i, err)
+		}
+		pastRetry := time.Now().UTC().Add(-time.Duration(i+1) * time.Minute)
+		if err := repo.IncrementRetry(ctx, n.ID, pastRetry, "timeout"); err != nil {
+			t.Fatalf("IncrementRetry[%d] failed: %v", i, err)
+		}
+	}
+
+	numWorkers := 5
+	var wg sync.WaitGroup
+	claimedCh := make(chan []*domain.Notification, numWorkers)
+
+	wg.Add(numWorkers)
+	for w := 0; w < numWorkers; w++ {
+		go func() {
+			defer wg.Done()
+			results, err := repo.GetRetryReady(ctx, numNotifications)
+			if err != nil {
+				t.Errorf("GetRetryReady error: %v", err)
+				return
+			}
+			claimedCh <- results
+		}()
+	}
+	wg.Wait()
+	close(claimedCh)
+
+	claimedIDs := make(map[uuid.UUID]int)
+	totalClaimed := 0
+	for results := range claimedCh {
+		for _, n := range results {
+			claimedIDs[n.ID]++
+			totalClaimed++
+		}
+	}
+
+	if totalClaimed != numNotifications {
+		t.Errorf("expected %d total claims, got %d", numNotifications, totalClaimed)
+	}
+	for id, count := range claimedIDs {
+		if count != 1 {
+			t.Errorf("notification %v was claimed %d times (expected 1)", id, count)
+		}
+	}
+}
+
+// --- Test that MoveToDLQ atomically publishes persist event ---
+
+func TestMoveToDLQPublishesPersistEvent(t *testing.T) {
+	_, _, client := setupTestRepo(t)
+	ctx := context.Background()
+
+	repo := NewRedisNotificationRepo(client)
+
+	n := newRedisTestNotification(func(n *domain.Notification) {
+		n.Status = domain.StatusProcessing
+		n.RetryCount = 3
+	})
+	if err := repo.Create(ctx, n); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	errMsg := "max retries exceeded"
+	if err := repo.MoveToDLQ(ctx, n, errMsg); err != nil {
+		t.Fatalf("MoveToDLQ failed: %v", err)
+	}
+
+	messages, err := client.XRange(ctx, KeyPersistQueue, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("XRange failed: %v", err)
+	}
+
+	if len(messages) < 2 {
+		t.Fatalf("expected at least 2 persist events (create + move_to_dlq), got %d", len(messages))
+	}
+
+	lastEvent := messages[len(messages)-1]
+	parsed, err := ParsePersistEvent(lastEvent.Values)
+	if err != nil {
+		t.Fatalf("ParsePersistEvent failed: %v", err)
+	}
+	if parsed.Action != "move_to_dlq" {
+		t.Errorf("expected action 'move_to_dlq', got %v", parsed.Action)
+	}
+}
+
+// --- Tests for recovery scripts skipping recently updated notifications ---
+
+func TestRecoverStuckQueued_SkipsRecentlyRequeued(t *testing.T) {
+	repo, _, _ := setupTestRepo(t)
+	ctx := context.Background()
+
+	oldTime := time.Now().UTC().Add(-30 * time.Minute)
+	recentTime := time.Now().UTC()
+
+	n := newRedisTestNotification(func(n *domain.Notification) {
+		n.Status = domain.StatusQueued
+		n.CreatedAt = oldTime
+		n.UpdatedAt = recentTime
+	})
+	if err := repo.Create(ctx, n); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	recovered, err := repo.RecoverStuckQueued(ctx, 10*time.Minute, 10)
+	if err != nil {
+		t.Fatalf("RecoverStuckQueued failed: %v", err)
+	}
+
+	if len(recovered) != 0 {
+		t.Errorf("expected 0 recovered (recently re-queued via updated_at), got %d", len(recovered))
+	}
+
+	got, _ := repo.GetByID(ctx, n.ID)
+	if got.Status != domain.StatusQueued {
+		t.Errorf("status should remain queued, got %v", got.Status)
+	}
+}
+
+func TestRecoverStuckProcessing_SkipsRecentlyUpdated(t *testing.T) {
+	repo, _, _ := setupTestRepo(t)
+	ctx := context.Background()
+
+	oldTime := time.Now().UTC().Add(-30 * time.Minute)
+	recentTime := time.Now().UTC()
+
+	n := newRedisTestNotification(func(n *domain.Notification) {
+		n.Status = domain.StatusProcessing
+		n.CreatedAt = oldTime
+		n.UpdatedAt = recentTime
+	})
+	if err := repo.Create(ctx, n); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	recovered, err := repo.RecoverStuckProcessing(ctx, 5*time.Minute, 10)
+	if err != nil {
+		t.Fatalf("RecoverStuckProcessing failed: %v", err)
+	}
+
+	if len(recovered) != 0 {
+		t.Errorf("expected 0 recovered (recently updated), got %d", len(recovered))
+	}
+
+	got, _ := repo.GetByID(ctx, n.ID)
+	if got.Status != domain.StatusProcessing {
+		t.Errorf("status should remain processing, got %v", got.Status)
+	}
+}
+
+func TestRecoverOrphanedPending_SkipsRecentlyUpdated(t *testing.T) {
+	repo, _, _ := setupTestRepo(t)
+	ctx := context.Background()
+
+	oldTime := time.Now().UTC().Add(-30 * time.Minute)
+	recentTime := time.Now().UTC()
+
+	n := newRedisTestNotification(func(n *domain.Notification) {
+		n.Status = domain.StatusPending
+		n.CreatedAt = oldTime
+		n.UpdatedAt = recentTime
+	})
+	if err := repo.Create(ctx, n); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	recovered, err := repo.RecoverOrphanedPending(ctx, 30*time.Second, 10)
+	if err != nil {
+		t.Fatalf("RecoverOrphanedPending failed: %v", err)
+	}
+
+	if len(recovered) != 0 {
+		t.Errorf("expected 0 recovered (recently updated), got %d", len(recovered))
+	}
+
+	got, _ := repo.GetByID(ctx, n.ID)
+	if got.Status != domain.StatusPending {
+		t.Errorf("status should remain pending, got %v", got.Status)
+	}
+}

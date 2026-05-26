@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/shared/domain"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 const (
@@ -225,6 +227,10 @@ return 1
 `)
 
 func (r *redisNotificationRepo) Create(ctx context.Context, n *domain.Notification) error {
+	ctx, span := tracing.StartSpan(ctx, "redis.Create")
+	defer span.End()
+	tracing.SetNotificationAttrs(span, n.ID.String(), string(n.Channel), string(n.Status))
+
 	fields := notificationToMap(n)
 	score := float64(n.CreatedAt.UnixNano())
 	idStr := n.ID.String()
@@ -282,10 +288,12 @@ func (r *redisNotificationRepo) Create(ctx context.Context, n *domain.Notificati
 
 	result, err := createScript.Run(ctx, r.client, keys, args...).Result()
 	if err != nil {
+		tracing.RecordError(span, err)
 		return fmt.Errorf("create notification: %w", err)
 	}
 
 	if str, ok := result.(string); ok && strings.HasPrefix(str, "IDEMPOTENCY_HIT:") {
+		tracing.SetAttr(span, "idempotency", "hit")
 		return ErrIdempotencyConflict
 	}
 
@@ -293,79 +301,111 @@ func (r *redisNotificationRepo) Create(ctx context.Context, n *domain.Notificati
 }
 
 func (r *redisNotificationRepo) CreateBatch(ctx context.Context, notifications []*domain.Notification) error {
-	for _, n := range notifications {
-		fields := notificationToMap(n)
-		key := notificationKey(n.ID)
-		score := float64(n.CreatedAt.UnixNano())
-		idStr := n.ID.String()
+	ctx, span := tracing.StartSpan(ctx, "redis.CreateBatch")
+	defer span.End()
+	tracing.SetIntAttr(span, "batch.size", len(notifications))
 
-		// Build persist event JSON
-		evt := PersistEvent{
-			Action:       "create",
-			Notification: n,
-			Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
-		}
-		persistData, err := json.Marshal(evt)
-		if err != nil {
-			slog.Error("CreateBatch: failed to marshal persist event", "id", idStr, "error", err)
-			continue
-		}
-
-		idemKey := ""
-		if n.IdempotencyKey != nil {
-			idemKey = KeyIdxIdemKey + *n.IdempotencyKey
-		}
-		batchKey := ""
-		if n.BatchID != nil {
-			batchKey = KeyIdxBatch + n.BatchID.String()
-		}
-		scheduleKey := ""
-		scheduleScore := float64(0)
-		if n.ScheduledAt != nil {
-			scheduleKey = KeySchedule
-			scheduleScore = float64(n.ScheduledAt.UnixNano())
-		}
-
-		keys := []string{
-			key,
-			KeyIdxStatus + string(n.Status),
-			KeyIdxChannel + string(n.Channel),
-			KeyIdxCreatedAt,
-			KeyPersistQueue,
-			idemKey,
-			batchKey,
-			scheduleKey,
-		}
-
-		idemTTLSeconds := int64(0)
-		if n.IdempotencyKey != nil {
-			idemTTLSeconds = int64(IdemKeyTTL.Seconds())
-		}
-
-		args := make([]interface{}, 0, 5+len(fields)*2)
-		args = append(args, idStr, score, idemTTLSeconds, scheduleScore, string(persistData))
-		for k, v := range fields {
-			args = append(args, k, v)
-		}
-
-		// Reuse createScript which handles EXISTS check + hash + indexes atomically.
-		// Run directly on client (not pipeline) so EVALSHA fallback works correctly.
-		// Ignore "already exists" errors to allow partial batch success (skip duplicates).
-		_, err = createScript.Run(ctx, r.client, keys, args...).Result()
-		if err != nil && !strings.Contains(err.Error(), "notification already exists") {
-			return fmt.Errorf("create batch notification %s: %w", idStr, err)
-		}
-		if err != nil {
-			slog.Warn("CreateBatch: skipping duplicate notification", "id", idStr)
-		}
+	if err := createScript.Load(ctx, r.client).Err(); err != nil {
+		slog.Warn("CreateBatch: script load failed, falling back to EVAL", "error", err)
 	}
 
-	return nil
+	const concurrency = 50
+	sem := make(chan struct{}, concurrency)
+	var mu sync.Mutex
+	var firstErr error
+
+	var wg sync.WaitGroup
+	for _, n := range notifications {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(n *domain.Notification) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			fields := notificationToMap(n)
+			key := notificationKey(n.ID)
+			score := float64(n.CreatedAt.UnixNano())
+			idStr := n.ID.String()
+
+			evt := PersistEvent{
+				Action:       "create",
+				Notification: n,
+				Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+			}
+			persistData, err := json.Marshal(evt)
+			if err != nil {
+				slog.Error("CreateBatch: failed to marshal persist event", "id", idStr, "error", err)
+				return
+			}
+
+			idemKey := ""
+			if n.IdempotencyKey != nil {
+				idemKey = KeyIdxIdemKey + *n.IdempotencyKey
+			}
+			batchKey := ""
+			if n.BatchID != nil {
+				batchKey = KeyIdxBatch + n.BatchID.String()
+			}
+			scheduleKey := ""
+			scheduleScore := float64(0)
+			if n.ScheduledAt != nil {
+				scheduleKey = KeySchedule
+				scheduleScore = float64(n.ScheduledAt.UnixNano())
+			}
+
+			keys := []string{
+				key,
+				KeyIdxStatus + string(n.Status),
+				KeyIdxChannel + string(n.Channel),
+				KeyIdxCreatedAt,
+				KeyPersistQueue,
+				idemKey,
+				batchKey,
+				scheduleKey,
+			}
+
+			idemTTLSeconds := int64(0)
+			if n.IdempotencyKey != nil {
+				idemTTLSeconds = int64(IdemKeyTTL.Seconds())
+			}
+
+			args := make([]interface{}, 0, 5+len(fields)*2)
+			args = append(args, idStr, score, idemTTLSeconds, scheduleScore, string(persistData))
+			for k, v := range fields {
+				args = append(args, k, v)
+			}
+
+			_, err = createScript.Run(ctx, r.client, keys, args...).Result()
+			if err != nil {
+				if strings.Contains(err.Error(), "notification already exists") {
+					slog.Warn("CreateBatch: skipping duplicate notification", "id", idStr)
+					return
+				}
+				if strings.Contains(err.Error(), "IDEMPOTENCY_HIT") {
+					slog.Warn("CreateBatch: idempotency hit, skipping", "id", idStr)
+					return
+				}
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("create batch notification %s: %w", idStr, err)
+				}
+				mu.Unlock()
+			}
+		}(n)
+	}
+	wg.Wait()
+
+	return firstErr
 }
 
 func (r *redisNotificationRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Notification, error) {
+	ctx, span := tracing.StartSpan(ctx, "redis.GetByID")
+	defer span.End()
+	tracing.SetAttr(span, "notification.id", id.String())
+
 	vals, err := r.client.HGetAll(ctx, notificationKey(id)).Result()
 	if err != nil {
+		tracing.RecordError(span, err)
 		return nil, err
 	}
 	if len(vals) == 0 {
@@ -428,6 +468,9 @@ func (r *redisNotificationRepo) GetByIdempotencyKey(ctx context.Context, key str
 }
 
 func (r *redisNotificationRepo) List(ctx context.Context, req domain.ListNotificationsRequest) ([]*domain.Notification, int64, error) {
+	ctx, span := tracing.StartSpan(ctx, "redis.List")
+	defer span.End()
+
 	limit := req.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -459,6 +502,7 @@ func (r *redisNotificationRepo) List(ctx context.Context, req domain.ListNotific
 		if err := r.client.ZInterStore(ctx, sourceKey, &store).Err(); err != nil {
 			return nil, 0, fmt.Errorf("zinterstore: %w", err)
 		}
+		r.client.Expire(ctx, sourceKey, 30*time.Second)
 		defer r.client.Del(ctx, sourceKey)
 	}
 
@@ -551,6 +595,12 @@ return 1
 `)
 
 func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, from, to domain.Status) (bool, error) {
+	ctx, span := tracing.StartSpan(ctx, "redis.UpdateStatus")
+	defer span.End()
+	tracing.SetAttr(span, "notification.id", id.String())
+	tracing.SetAttr(span, "status.from", string(from))
+	tracing.SetAttr(span, "status.to", string(to))
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	key := notificationKey(id)
 	idStr := id.String()
@@ -563,6 +613,7 @@ func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, 
 		string(from), string(to), now, idStr,
 	).Int64()
 	if err != nil {
+		tracing.RecordError(span, err)
 		return false, err
 	}
 	if result == 0 {
@@ -619,6 +670,12 @@ return 1
 `)
 
 func (r *redisNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
+	ctx, span := tracing.StartSpan(ctx, "redis.UpdateStatusWithDetails")
+	defer span.End()
+	tracing.SetAttr(span, "notification.id", id.String())
+	tracing.SetAttr(span, "status.from", string(from))
+	tracing.SetAttr(span, "status.to", string(to))
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	key := notificationKey(id)
 	idStr := id.String()
@@ -640,6 +697,7 @@ func (r *redisNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id 
 		string(from), string(to), now, pmid, emsg, idStr,
 	).Int64()
 	if err != nil {
+		tracing.RecordError(span, err)
 		return false, err
 	}
 	if result == 0 {
@@ -707,6 +765,10 @@ return 1
 `)
 
 func (r *redisNotificationRepo) IncrementRetry(ctx context.Context, id uuid.UUID, nextRetryAt time.Time, errorMsg string) error {
+	ctx, span := tracing.StartSpan(ctx, "redis.IncrementRetry")
+	defer span.End()
+	tracing.SetAttr(span, "notification.id", id.String())
+
 	key := notificationKey(id)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	idStr := id.String()
@@ -740,48 +802,94 @@ func (r *redisNotificationRepo) IncrementRetry(ctx context.Context, id uuid.UUID
 		float64(nextRetryAt.UnixNano()),
 	).Result()
 	if err != nil {
+		tracing.RecordError(span, err)
 		return fmt.Errorf("increment retry: %w", err)
 	}
 
 	return nil
 }
 
+// moveToDLQScript atomically updates notification status, creates DLQ entry,
+// moves status indexes, and publishes persist event.
+// KEYS: [1]=notification key, [2]=dlq key, [3]=idx:status:<from>, [4]=idx:status:failed, [5]=idx:created_at, [6]=persist:queue
+// ARGV: [1]=member, [2]=now, [3]=errorMsg, [4]=dlqID, [5]=channel, [6]=recipient, [7]=content, [8]=retryCount, [9]=persistEvt
+var moveToDLQScript = redis.NewScript(`
+local nKey = KEYS[1]
+local dlqKey = KEYS[2]
+local fromIdx = KEYS[3]
+local failedIdx = KEYS[4]
+local idxCreatedAt = KEYS[5]
+local persistQueue = KEYS[6]
+local member = ARGV[1]
+local now = ARGV[2]
+local errorMsg = ARGV[3]
+local dlqID = ARGV[4]
+local channel = ARGV[5]
+local recipient = ARGV[6]
+local content = ARGV[7]
+local retryCount = ARGV[8]
+local persistEvt = ARGV[9]
+
+redis.call('HSET', nKey, 'status', 'failed', 'error_message', errorMsg, 'updated_at', now)
+
+redis.call('HSET', dlqKey, 'id', dlqID, 'notification_id', member, 'channel', channel,
+    'recipient', recipient, 'content', content, 'error_message', errorMsg,
+    'retry_count', retryCount, 'failed_at', now, 'reprocessed', 'false')
+
+local score = redis.call('ZSCORE', idxCreatedAt, member)
+if not score then
+    score = 0
+end
+
+redis.call('ZREM', fromIdx, member)
+redis.call('ZADD', failedIdx, score, member)
+
+redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', persistEvt)
+
+return 1
+`)
+
 func (r *redisNotificationRepo) MoveToDLQ(ctx context.Context, n *domain.Notification, errorMsg string) error {
+	ctx, span := tracing.StartSpan(ctx, "redis.MoveToDLQ")
+	defer span.End()
+	tracing.SetNotificationAttrs(span, n.ID.String(), string(n.Channel), string(n.Status))
+
 	now := time.Now().UTC()
 	idStr := n.ID.String()
+	nowStr := now.Format(time.RFC3339Nano)
+	dlqID := uuid.New().String()
 
-	dlqEntry := map[string]interface{}{
-		"id":              uuid.New().String(),
-		"notification_id": idStr,
-		"channel":         string(n.Channel),
-		"recipient":       n.Recipient,
-		"content":         n.Content,
-		"error_message":   errorMsg,
-		"retry_count":     strconv.Itoa(n.RetryCount),
-		"failed_at":       now.Format(time.RFC3339Nano),
-		"reprocessed":     "false",
+	evt := PersistEvent{
+		Action:       "move_to_dlq",
+		Notification: n,
+		Extra:        map[string]string{"error_message": errorMsg},
+		Timestamp:    nowStr,
+	}
+	persistData, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal persist event: %w", err)
 	}
 
-	pipe := r.client.Pipeline()
-	pipe.HSet(ctx, KeyDLQ+idStr, dlqEntry)
-	pipe.HSet(ctx, notificationKey(n.ID), map[string]interface{}{
-		"status":        string(domain.StatusFailed),
-		"error_message": errorMsg,
-		"updated_at":    now.Format(time.RFC3339Nano),
-	})
+	keys := []string{
+		notificationKey(n.ID),
+		KeyDLQ + idStr,
+		KeyIdxStatus + string(n.Status),
+		KeyIdxStatus + string(domain.StatusFailed),
+		KeyIdxCreatedAt,
+		KeyPersistQueue,
+	}
 
-	pipe.ZRem(ctx, KeyIdxStatus+string(n.Status), idStr)
-	pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusFailed), redis.Z{
-		Score:  float64(n.CreatedAt.UnixNano()),
-		Member: idStr,
-	})
+	_, err = moveToDLQScript.Run(ctx, r.client, keys,
+		idStr, nowStr, errorMsg, dlqID,
+		string(n.Channel), n.Recipient, n.Content,
+		strconv.Itoa(n.RetryCount), string(persistData),
+	).Result()
+	if err != nil {
+		tracing.RecordError(span, err)
+		return fmt.Errorf("move to dlq: %w", err)
+	}
 
-	r.publishPersistEvent(ctx, pipe, "move_to_dlq", n, map[string]string{
-		"error_message": errorMsg,
-	})
-
-	_, err := pipe.Exec(ctx)
-	return err
+	return nil
 }
 
 func (r *redisNotificationRepo) GetScheduledReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
@@ -863,9 +971,10 @@ func (r *redisNotificationRepo) ClaimScheduledBatch(ctx context.Context, limit i
 }
 
 // recoverStuckScript atomically finds stuck notifications, updates their status,
-// and moves them in the status indexes. Score is read from idx:created_at.
+// and moves them in the status indexes. Filters by updated_at to avoid
+// recovering recently re-queued notifications whose created_at is old.
 // KEYS: [1]=idx:status:<from>, [2]=idx:status:<to>, [3]=idx:created_at, [4]=persist:queue
-// ARGV: [1]=cutoffScore, [2]=limit, [3]=now, [4]=fromStatus, [5]=toStatus
+// ARGV: [1]=cutoffScore (created_at pre-filter), [2]=limit, [3]=now, [4]=fromStatus, [5]=toStatus, [6]=cutoffStr (RFC3339Nano)
 var recoverStuckScript = redis.NewScript(`
 local fromKey = KEYS[1]
 local toKey = KEYS[2]
@@ -876,17 +985,17 @@ local limit = tonumber(ARGV[2])
 local now = ARGV[3]
 local fromStatus = ARGV[4]
 local toStatus = ARGV[5]
+local cutoffStr = ARGV[6]
 
-local stuck = redis.call('ZRANGEBYSCORE', fromKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
+local candidates = redis.call('ZRANGEBYSCORE', fromKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
 
 local recovered = {}
-for _, id in ipairs(stuck) do
+for _, id in ipairs(candidates) do
     local nKey = 'notification:' .. id
     local updatedAt = redis.call('HGET', nKey, 'updated_at')
-    if updatedAt then
+    if updatedAt and updatedAt < cutoffStr then
         redis.call('HSET', nKey, 'status', toStatus, 'updated_at', now)
 
-        -- Get score from created_at index
         local score = redis.call('ZSCORE', idxCreatedAt, id)
         if not score then
             score = 0
@@ -895,8 +1004,7 @@ for _, id in ipairs(stuck) do
         redis.call('ZREM', fromKey, id)
         redis.call('ZADD', toKey, score, id)
 
-        -- Publish persist event
-        local evt = '{"action":"update_status","extra":{"id":"' .. id .. '","from":"' .. fromStatus .. '","to":"' .. toStatus .. '"},"timestamp":"' .. now .. '"}'
+        local evt = cjson.encode({action='update_status', extra={id=id, from=fromStatus, to=toStatus}, timestamp=now})
         redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
 
         table.insert(recovered, id)
@@ -911,6 +1019,7 @@ func (r *redisNotificationRepo) RecoverStuckQueued(ctx context.Context, stuckThr
 	cutoff := now.Add(-stuckThreshold)
 	cutoffScore := float64(cutoff.UnixNano())
 	nowStr := now.Format(time.RFC3339Nano)
+	cutoffStr := cutoff.Format(time.RFC3339Nano)
 
 	ids, err := recoverStuckScript.Run(ctx, r.client,
 		[]string{
@@ -921,6 +1030,7 @@ func (r *redisNotificationRepo) RecoverStuckQueued(ctx context.Context, stuckThr
 		},
 		cutoffScore, limit, nowStr,
 		string(domain.StatusQueued), string(domain.StatusPending),
+		cutoffStr,
 	).StringSlice()
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("recover stuck: %w", err)
@@ -933,18 +1043,64 @@ func (r *redisNotificationRepo) RecoverStuckQueued(ctx context.Context, stuckThr
 	return r.getNotificationsByIDs(ctx, ids)
 }
 
+// getRetryReadyScript atomically claims retry-ready notifications with CAS check.
+// Prevents race conditions when multiple scheduler instances run concurrently.
+// KEYS: [1]=idx:retry, [2]=idx:status:failed, [3]=idx:status:queued, [4]=idx:created_at, [5]=persist:queue
+// ARGV: [1]=nowNano, [2]=limit, [3]=now (RFC3339Nano)
+var getRetryReadyScript = redis.NewScript(`
+local retryKey = KEYS[1]
+local failedIdx = KEYS[2]
+local queuedIdx = KEYS[3]
+local idxCreatedAt = KEYS[4]
+local persistQueue = KEYS[5]
+local nowNano = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local now = ARGV[3]
+
+local ready = redis.call('ZRANGEBYSCORE', retryKey, '-inf', nowNano, 'LIMIT', 0, limit)
+
+local claimed = {}
+for _, id in ipairs(ready) do
+    local nKey = 'notification:' .. id
+    local status = redis.call('HGET', nKey, 'status')
+    if status == 'failed' then
+        redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
+        redis.call('ZREM', retryKey, id)
+
+        local score = redis.call('ZSCORE', idxCreatedAt, id)
+        if not score then
+            score = 0
+        end
+
+        redis.call('ZREM', failedIdx, id)
+        redis.call('ZADD', queuedIdx, score, id)
+
+        local evt = cjson.encode({action='update_status', extra={id=id, from='failed', to='queued'}, timestamp=now})
+        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+
+        table.insert(claimed, id)
+    end
+end
+
+return claimed
+`)
+
 func (r *redisNotificationRepo) GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
 	now := time.Now().UTC()
-	nowNano := fmt.Sprintf("%d", now.UnixNano())
+	nowNano := now.UnixNano()
 	nowStr := now.Format(time.RFC3339Nano)
 
-	// Get notifications from idx:retry where score (next_retry_at) <= now
-	ids, err := r.client.ZRangeByScore(ctx, KeyIdxRetry, &redis.ZRangeBy{
-		Min:   "-inf",
-		Max:   nowNano,
-		Count: int64(limit),
-	}).Result()
-	if err != nil {
+	ids, err := getRetryReadyScript.Run(ctx, r.client,
+		[]string{
+			KeyIdxRetry,
+			KeyIdxStatus + string(domain.StatusFailed),
+			KeyIdxStatus + string(domain.StatusQueued),
+			KeyIdxCreatedAt,
+			KeyPersistQueue,
+		},
+		nowNano, limit, nowStr,
+	).StringSlice()
+	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("get retry ready: %w", err)
 	}
 
@@ -952,34 +1108,12 @@ func (r *redisNotificationRepo) GetRetryReady(ctx context.Context, limit int) ([
 		return nil, nil
 	}
 
-	// Transition each from failed to queued, remove from idx:retry
-	pipe := r.client.Pipeline()
-	for _, idStr := range ids {
-		nKey := KeyNotification + idStr
-		pipe.HSet(ctx, nKey, map[string]interface{}{
-			"status":     string(domain.StatusQueued),
-			"updated_at": nowStr,
-		})
-		pipe.ZRem(ctx, KeyIdxRetry, idStr)
-		pipe.ZRem(ctx, KeyIdxStatus+string(domain.StatusFailed), idStr)
-		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: float64(now.UnixNano()), Member: idStr})
-
-		r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
-			"id":   idStr,
-			"from": string(domain.StatusFailed),
-			"to":   string(domain.StatusQueued),
-		})
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("get retry ready transition: %w", err)
-	}
-
 	return r.getNotificationsByIDs(ctx, ids)
 }
 
 // recoverStuckProcessingScript reuses the same pattern as recoverStuckScript.
 // KEYS: [1]=idx:status:<from>, [2]=idx:status:<to>, [3]=idx:created_at, [4]=persist:queue
-// ARGV: [1]=cutoffScore, [2]=limit, [3]=now, [4]=fromStatus, [5]=toStatus
+// ARGV: [1]=cutoffScore, [2]=limit, [3]=now, [4]=fromStatus, [5]=toStatus, [6]=cutoffStr (RFC3339Nano)
 var recoverStuckProcessingScript = redis.NewScript(`
 local fromKey = KEYS[1]
 local toKey = KEYS[2]
@@ -990,14 +1124,15 @@ local limit = tonumber(ARGV[2])
 local now = ARGV[3]
 local fromStatus = ARGV[4]
 local toStatus = ARGV[5]
+local cutoffStr = ARGV[6]
 
-local stuck = redis.call('ZRANGEBYSCORE', fromKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
+local candidates = redis.call('ZRANGEBYSCORE', fromKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
 
 local recovered = {}
-for _, id in ipairs(stuck) do
+for _, id in ipairs(candidates) do
     local nKey = 'notification:' .. id
     local updatedAt = redis.call('HGET', nKey, 'updated_at')
-    if updatedAt then
+    if updatedAt and updatedAt < cutoffStr then
         redis.call('HSET', nKey, 'status', toStatus, 'updated_at', now)
 
         local score = redis.call('ZSCORE', idxCreatedAt, id)
@@ -1008,7 +1143,7 @@ for _, id in ipairs(stuck) do
         redis.call('ZREM', fromKey, id)
         redis.call('ZADD', toKey, score, id)
 
-        local evt = '{"action":"update_status","extra":{"id":"' .. id .. '","from":"' .. fromStatus .. '","to":"' .. toStatus .. '"},"timestamp":"' .. now .. '"}'
+        local evt = cjson.encode({action='update_status', extra={id=id, from=fromStatus, to=toStatus}, timestamp=now})
         redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
 
         table.insert(recovered, id)
@@ -1023,6 +1158,7 @@ func (r *redisNotificationRepo) RecoverStuckProcessing(ctx context.Context, stuc
 	cutoff := now.Add(-stuckThreshold)
 	cutoffScore := float64(cutoff.UnixNano())
 	nowStr := now.Format(time.RFC3339Nano)
+	cutoffStr := cutoff.Format(time.RFC3339Nano)
 
 	ids, err := recoverStuckProcessingScript.Run(ctx, r.client,
 		[]string{
@@ -1033,6 +1169,7 @@ func (r *redisNotificationRepo) RecoverStuckProcessing(ctx context.Context, stuc
 		},
 		cutoffScore, limit, nowStr,
 		string(domain.StatusProcessing), string(domain.StatusQueued),
+		cutoffStr,
 	).StringSlice()
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("recover stuck processing: %w", err)
@@ -1047,8 +1184,9 @@ func (r *redisNotificationRepo) RecoverStuckProcessing(ctx context.Context, stuc
 
 // recoverOrphanedPendingScript atomically finds stale pending notifications (not scheduled),
 // updates their status, and moves them in status indexes.
+// Filters by updated_at to avoid recovering recently created notifications.
 // KEYS: [1]=idx:status:pending, [2]=schedule:pending, [3]=idx:status:queued, [4]=idx:created_at, [5]=persist:queue
-// ARGV: [1]=cutoffScore, [2]=limit, [3]=now
+// ARGV: [1]=cutoffScore, [2]=limit, [3]=now, [4]=cutoffStr (RFC3339Nano)
 var recoverOrphanedPendingScript = redis.NewScript(`
 local pendingKey = KEYS[1]
 local scheduleKey = KEYS[2]
@@ -1058,29 +1196,32 @@ local persistQueue = KEYS[5]
 local cutoffScore = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
 local now = ARGV[3]
+local cutoffStr = ARGV[4]
 
-local stale = redis.call('ZRANGEBYSCORE', pendingKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
+local candidates = redis.call('ZRANGEBYSCORE', pendingKey, '-inf', cutoffScore, 'LIMIT', 0, limit)
 
 local recovered = {}
-for _, id in ipairs(stale) do
-    -- Skip if it's a scheduled notification (exists in schedule:pending)
+for _, id in ipairs(candidates) do
     local inSchedule = redis.call('ZSCORE', scheduleKey, id)
     if not inSchedule then
         local nKey = 'notification:' .. id
-        redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
+        local updatedAt = redis.call('HGET', nKey, 'updated_at')
+        if updatedAt and updatedAt < cutoffStr then
+            redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
 
-        local score = redis.call('ZSCORE', idxCreatedAt, id)
-        if not score then
-            score = 0
+            local score = redis.call('ZSCORE', idxCreatedAt, id)
+            if not score then
+                score = 0
+            end
+
+            redis.call('ZREM', pendingKey, id)
+            redis.call('ZADD', queuedKey, score, id)
+
+            local evt = cjson.encode({action='update_status', extra={id=id, from='pending', to='queued'}, timestamp=now})
+            redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+
+            table.insert(recovered, id)
         end
-
-        redis.call('ZREM', pendingKey, id)
-        redis.call('ZADD', queuedKey, score, id)
-
-        local evt = '{"action":"update_status","extra":{"id":"' .. id .. '","from":"pending","to":"queued"},"timestamp":"' .. now .. '"}'
-        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
-
-        table.insert(recovered, id)
     end
 end
 
@@ -1092,6 +1233,7 @@ func (r *redisNotificationRepo) RecoverOrphanedPending(ctx context.Context, stal
 	cutoff := now.Add(-staleDuration)
 	cutoffScore := float64(cutoff.UnixNano())
 	nowStr := now.Format(time.RFC3339Nano)
+	cutoffStr := cutoff.Format(time.RFC3339Nano)
 
 	ids, err := recoverOrphanedPendingScript.Run(ctx, r.client,
 		[]string{
@@ -1101,7 +1243,7 @@ func (r *redisNotificationRepo) RecoverOrphanedPending(ctx context.Context, stal
 			KeyIdxCreatedAt,
 			KeyPersistQueue,
 		},
-		cutoffScore, limit, nowStr,
+		cutoffScore, limit, nowStr, cutoffStr,
 	).StringSlice()
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("recover orphaned pending: %w", err)

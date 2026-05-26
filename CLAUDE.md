@@ -22,7 +22,8 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **Refactoring**: Migrator moved from API to dbwriter, dead code removed, go.mod versions aligned, sentinel errors, custom Prometheus registries — all AI-guided.
 - **Kubernetes + KEDA**: Local K3s cluster via k3d, KEDA event-driven autoscaling on Redis Stream lag, priority-aware scaling thresholds, one-command setup/demo/teardown scripts.
 - **Code Review Fixes**: Atomic idempotency (Lua script), bounded re-enqueue goroutines, provider response body limit (1MB), Prometheus full scrape coverage (all 4 services), API key enabled by default.
-- **Distributed Tracing**: Correlation ID propagation via `shared/tracing` package (API → Redis Streams → Consumer logs), Jaeger for trace visualization.
+- **Distributed Tracing**: Full OpenTelemetry SDK integration (OTLP/HTTP → Jaeger), otelhttp middleware on API, correlation ID propagation via `shared/tracing` package.
+- **Critical Bug Fixes (Post-Review)**: Recovery scripts now compare `updated_at` (not `created_at` score) to avoid recovering recently re-queued notifications. `MoveToDLQ` and `GetRetryReady` converted from Redis pipeline to atomic Lua scripts preventing race conditions. `CreateBatch` parallelized with 50 concurrent goroutines (500ms → ~20ms). Worker now checks `UpdateStatusWithDetails` return values and reverts status on semaphore-full re-enqueue drops. Batch create supports per-notification idempotency keys. List temporary intersection keys now have EXPIRE as safety net.
 
 ## Key Commands Used
 

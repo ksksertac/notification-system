@@ -8,6 +8,7 @@ import (
 
 	"github.com/sertacyildirim/notification-system/shared/queue"
 	"github.com/sertacyildirim/notification-system/shared/repository"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 // MetricsRecorder records scheduler operational metrics.
@@ -163,8 +164,12 @@ func (s *Scheduler) drainScheduled(ctx context.Context) {
 }
 
 func (s *Scheduler) processBatch(ctx context.Context) int {
+	ctx, span := tracing.StartSpan(ctx, "scheduler.ProcessBatch")
+	defer span.End()
+
 	notifications, err := s.repo.ClaimScheduledBatch(ctx, s.batchSize)
 	if err != nil {
+		tracing.RecordError(span, err)
 		s.logger.Error("failed to claim scheduled notifications", "error", err)
 		return 0
 	}
@@ -173,10 +178,12 @@ func (s *Scheduler) processBatch(ctx context.Context) int {
 		return 0
 	}
 
+	tracing.SetIntAttr(span, "scheduler.claimed", len(notifications))
 	s.logger.Info("claimed scheduled notifications", "count", len(notifications))
 	s.metrics.RecordClaimed(len(notifications))
 
 	if err := s.publisher.PublishBatch(ctx, notifications); err != nil {
+		tracing.RecordError(span, err)
 		s.logger.Error("failed to publish batch to stream", "count", len(notifications), "error", err)
 		return 0
 	}
@@ -201,8 +208,12 @@ func (s *Scheduler) runRetryRecovery(ctx context.Context) {
 }
 
 func (s *Scheduler) processRetryReady(ctx context.Context) {
+	ctx, span := tracing.StartSpan(ctx, "scheduler.ProcessRetryReady")
+	defer span.End()
+
 	notifications, err := s.repo.GetRetryReady(ctx, s.batchSize)
 	if err != nil {
+		tracing.RecordError(span, err)
 		s.logger.Error("failed to get retry-ready notifications", "error", err)
 		return
 	}
@@ -211,15 +222,20 @@ func (s *Scheduler) processRetryReady(ctx context.Context) {
 		return
 	}
 
+	tracing.SetIntAttr(span, "scheduler.retry_count", len(notifications))
 	s.logger.Info("re-enqueuing retry-ready notifications", "count", len(notifications))
 	s.metrics.RecordRetryReady(len(notifications))
 
 	if err := s.publisher.PublishBatch(ctx, notifications); err != nil {
+		tracing.RecordError(span, err)
 		s.logger.Error("failed to publish retry-ready batch to stream", "count", len(notifications), "error", err)
 	}
 }
 
 func (s *Scheduler) recoverStuck(ctx context.Context) {
+	ctx, span := tracing.StartSpan(ctx, "scheduler.RecoverStuck")
+	defer span.End()
+
 	// Recover stuck queued notifications (claimed but never published to stream)
 	recovered, err := s.repo.RecoverStuckQueued(ctx, s.stuckThreshold, s.batchSize)
 	if err != nil {
