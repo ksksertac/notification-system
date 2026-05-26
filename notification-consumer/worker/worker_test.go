@@ -341,6 +341,7 @@ func newTestWorkerPool(opts ...func(*testPoolOpts)) *WorkerPool {
 		metrics:     metrics,
 		tmplEngine:  tmplEngine,
 		logger:      logger,
+		requeueSem:  make(chan struct{}, cfg.WorkerCount*2),
 	}
 }
 

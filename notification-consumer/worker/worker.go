@@ -50,6 +50,7 @@ type WorkerPool struct {
 	tmplEngine  template.Engine
 	logger      *slog.Logger
 	wg          sync.WaitGroup
+	requeueSem  chan struct{}
 }
 
 func NewWorkerPool(
@@ -79,6 +80,7 @@ func NewWorkerPool(
 		metrics:     metrics,
 		tmplEngine:  tmplEngine,
 		logger:      logger,
+		requeueSem:  make(chan struct{}, cfg.WorkerCount*2),
 	}
 }
 
@@ -159,6 +161,7 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		"notification_id", msg.NotificationID,
 		"channel", msg.Channel,
 		"stream", msg.StreamName,
+		"correlation_id", msg.CorrelationID,
 	)
 
 	n, err := wp.repo.GetByID(ctx, msg.NotificationID)
@@ -284,13 +287,22 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 }
 
 func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification) {
+	select {
+	case wp.requeueSem <- struct{}{}:
+	default:
+		wp.logger.Warn("requeue semaphore full, dropping re-enqueue", "notification_id", n.ID)
+		return
+	}
+
 	wp.wg.Add(1)
 	go func() {
 		defer wp.wg.Done()
+		defer func() { <-wp.requeueSem }()
 
 		select {
 		case <-time.After(500 * time.Millisecond):
 		case <-ctx.Done():
+			return
 		}
 
 		publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

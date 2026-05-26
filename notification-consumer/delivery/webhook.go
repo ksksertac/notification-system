@@ -63,7 +63,7 @@ func (p *webhookProvider) Send(ctx context.Context, recipient string, channel st
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
 	if resp.StatusCode >= 500 {
 		return &SendResult{Retryable: true}, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(respBody))
