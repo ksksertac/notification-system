@@ -37,6 +37,7 @@ type Message struct {
 	Content        string
 	Priority       domain.Priority
 	RetryCount     int
+	CorrelationID  string
 }
 
 type Publisher interface {
@@ -78,6 +79,8 @@ func ParseMessage(stream string, id string, values map[string]interface{}) (Mess
 		fmt.Sscanf(retryStr, "%d", &retryCount)
 	}
 
+	correlationID, _ := values["correlation_id"].(string)
+
 	return Message{
 		ID:             id,
 		StreamName:     stream,
@@ -87,5 +90,6 @@ func ParseMessage(stream string, id string, values map[string]interface{}) (Mess
 		Content:        content,
 		Priority:       priority,
 		RetryCount:     retryCount,
+		CorrelationID:  correlationID,
 	}, nil
 }

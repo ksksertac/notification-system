@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sertacyildirim/notification-system/shared/domain"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 // ---------------------------------------------------------------------------
@@ -270,7 +271,7 @@ func TestCorrelationID_SetsResponseHeader(t *testing.T) {
 
 func TestGetCorrelationID_FromContext(t *testing.T) {
 	// Context with a correlation ID
-	ctx := context.WithValue(context.Background(), CorrelationIDKey, "test-id-456")
+	ctx := context.WithValue(context.Background(), tracing.CorrelationIDKey, "test-id-456")
 	got := GetCorrelationID(ctx)
 	if got != "test-id-456" {
 		t.Fatalf("expected 'test-id-456', got %q", got)
@@ -284,7 +285,7 @@ func TestGetCorrelationID_FromContext(t *testing.T) {
 	}
 
 	// Context with wrong type value
-	wrongCtx := context.WithValue(context.Background(), CorrelationIDKey, 12345)
+	wrongCtx := context.WithValue(context.Background(), tracing.CorrelationIDKey, 12345)
 	got = GetCorrelationID(wrongCtx)
 	if got != "" {
 		t.Fatalf("expected empty string for context with wrong type value, got %q", got)
@@ -382,7 +383,7 @@ func TestRecovery_CatchesPanic(t *testing.T) {
 	}))
 
 	// Add a correlation ID to the context so we can verify it appears in the response
-	ctx := context.WithValue(context.Background(), CorrelationIDKey, "panic-corr-id")
+	ctx := context.WithValue(context.Background(), tracing.CorrelationIDKey, "panic-corr-id")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(ctx)
 	rr := httptest.NewRecorder()

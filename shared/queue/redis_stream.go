@@ -7,6 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/shared/domain"
+	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
 type redisStreamPublisher struct {
@@ -20,37 +21,45 @@ func NewRedisPublisher(client *redis.Client) Publisher {
 func (p *redisStreamPublisher) Publish(ctx context.Context, n *domain.Notification) error {
 	stream := StreamForPriority(n.Priority)
 
-	args := &redis.XAddArgs{
-		Stream: stream,
-		Values: map[string]interface{}{
-			"notification_id": n.ID.String(),
-			"channel":         string(n.Channel),
-			"recipient":       n.Recipient,
-			"content":         n.Content,
-			"priority":        n.Priority.String(),
-			"retry_count":     fmt.Sprintf("%d", n.RetryCount),
-		},
+	values := map[string]interface{}{
+		"notification_id": n.ID.String(),
+		"channel":         string(n.Channel),
+		"recipient":       n.Recipient,
+		"content":         n.Content,
+		"priority":        n.Priority.String(),
+		"retry_count":     fmt.Sprintf("%d", n.RetryCount),
+	}
+	if cid := tracing.GetCorrelationID(ctx); cid != "" {
+		values["correlation_id"] = cid
 	}
 
-	_, err := p.client.XAdd(ctx, args).Result()
+	_, err := p.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: stream,
+		Values: values,
+	}).Result()
 	return err
 }
 
 func (p *redisStreamPublisher) PublishBatch(ctx context.Context, notifications []*domain.Notification) error {
 	pipe := p.client.Pipeline()
 
+	cid := tracing.GetCorrelationID(ctx)
 	for _, n := range notifications {
 		stream := StreamForPriority(n.Priority)
+		values := map[string]interface{}{
+			"notification_id": n.ID.String(),
+			"channel":         string(n.Channel),
+			"recipient":       n.Recipient,
+			"content":         n.Content,
+			"priority":        n.Priority.String(),
+			"retry_count":     fmt.Sprintf("%d", n.RetryCount),
+		}
+		if cid != "" {
+			values["correlation_id"] = cid
+		}
 		pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: stream,
-			Values: map[string]interface{}{
-				"notification_id": n.ID.String(),
-				"channel":         string(n.Channel),
-				"recipient":       n.Recipient,
-				"content":         n.Content,
-				"priority":        n.Priority.String(),
-				"retry_count":     fmt.Sprintf("%d", n.RetryCount),
-			},
+			Values: values,
 		})
 	}
 
