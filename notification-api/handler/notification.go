@@ -32,7 +32,9 @@ func NewNotificationHandler(svc service.NotificationService) *NotificationHandle
 // @Param request body domain.CreateNotificationRequest true "Notification request"
 // @Success 201 {object} domain.APIResponse{data=domain.NotificationResponse}
 // @Failure 400 {object} domain.APIResponse{error=domain.APIError}
+// @Failure 429 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 500 {object} domain.APIResponse{error=domain.APIError}
+// @Security ApiKeyAuth
 // @Router /notifications [post]
 func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req domain.CreateNotificationRequest
@@ -65,7 +67,9 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 // @Param request body domain.BatchCreateRequest true "Batch notification request"
 // @Success 201 {object} domain.APIResponse{data=domain.BatchCreateResponse}
 // @Failure 400 {object} domain.APIResponse{error=domain.APIError}
+// @Failure 429 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 500 {object} domain.APIResponse{error=domain.APIError}
+// @Security ApiKeyAuth
 // @Router /notifications/batch [post]
 func (h *NotificationHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	var req domain.BatchCreateRequest
@@ -105,7 +109,9 @@ func (h *NotificationHandler) CreateBatch(w http.ResponseWriter, r *http.Request
 // @Success 200 {object} domain.APIResponse{data=domain.NotificationResponse}
 // @Failure 400 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 404 {object} domain.APIResponse{error=domain.APIError}
+// @Failure 429 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 500 {object} domain.APIResponse{error=domain.APIError}
+// @Security ApiKeyAuth
 // @Router /notifications/{id} [get]
 func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -135,7 +141,9 @@ func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 // @Param batchId path string true "Batch UUID"
 // @Success 200 {object} domain.APIResponse{data=[]domain.NotificationResponse}
 // @Failure 400 {object} domain.APIResponse{error=domain.APIError}
+// @Failure 429 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 500 {object} domain.APIResponse{error=domain.APIError}
+// @Security ApiKeyAuth
 // @Router /notifications/batch/{batchId} [get]
 func (h *NotificationHandler) GetByBatchID(w http.ResponseWriter, r *http.Request) {
 	batchID, err := uuid.Parse(chi.URLParam(r, "batchId"))
@@ -168,7 +176,9 @@ func (h *NotificationHandler) GetByBatchID(w http.ResponseWriter, r *http.Reques
 // @Failure 400 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 404 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 409 {object} domain.APIResponse{error=domain.APIError}
+// @Failure 429 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 500 {object} domain.APIResponse{error=domain.APIError}
+// @Security ApiKeyAuth
 // @Router /notifications/{id}/cancel [patch]
 func (h *NotificationHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -211,7 +221,9 @@ func (h *NotificationHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 // @Param limit query int false "Page size (1-100, default 20)"
 // @Success 200 {object} domain.APIResponse{data=domain.ListNotificationsResponse}
 // @Failure 400 {object} domain.APIResponse{error=domain.APIError}
+// @Failure 429 {object} domain.APIResponse{error=domain.APIError}
 // @Failure 500 {object} domain.APIResponse{error=domain.APIError}
+// @Security ApiKeyAuth
 // @Router /notifications [get]
 func (h *NotificationHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

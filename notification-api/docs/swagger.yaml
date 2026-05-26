@@ -177,6 +177,15 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            allOf:
+            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - properties:
+                error:
+                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
@@ -186,6 +195,8 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+      security:
+      - ApiKeyAuth: []
       summary: List notifications
       tags:
       - notifications
@@ -225,6 +236,15 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            allOf:
+            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - properties:
+                error:
+                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
@@ -234,6 +254,8 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+      security:
+      - ApiKeyAuth: []
       summary: Create a notification
       tags:
       - notifications
@@ -276,6 +298,15 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            allOf:
+            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - properties:
+                error:
+                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
@@ -285,6 +316,8 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+      security:
+      - ApiKeyAuth: []
       summary: Get notification by ID
       tags:
       - notifications
@@ -331,6 +364,15 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            allOf:
+            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - properties:
+                error:
+                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
@@ -340,6 +382,8 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+      security:
+      - ApiKeyAuth: []
       summary: Cancel a notification
       tags:
       - notifications
@@ -376,6 +420,15 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            allOf:
+            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - properties:
+                error:
+                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
@@ -385,6 +438,8 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+      security:
+      - ApiKeyAuth: []
       summary: Create a batch of notifications
       tags:
       - notifications
@@ -420,6 +475,15 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            allOf:
+            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - properties:
+                error:
+                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
@@ -429,7 +493,14 @@ paths:
                 error:
                   $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
               type: object
+      security:
+      - ApiKeyAuth: []
       summary: Get notifications by batch ID
       tags:
       - notifications
+securityDefinitions:
+  ApiKeyAuth:
+    in: header
+    name: X-API-Key
+    type: apiKey
 swagger: "2.0"

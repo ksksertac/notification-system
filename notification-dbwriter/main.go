@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -74,11 +76,39 @@ func run() error {
 	w.StartCleanup(writerCtx)
 	logger.Info("dbwriter running", "batch_size", batchSize, "flush_interval", flushInterval, "hot_window", "1h")
 
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/health", func(resp http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		status := map[string]string{"status": "healthy"}
+		code := http.StatusOK
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			status["status"] = "unhealthy"
+			status["redis"] = err.Error()
+			code = http.StatusServiceUnavailable
+		}
+		if err := db.PingContext(ctx); err != nil {
+			status["status"] = "unhealthy"
+			status["postgres"] = err.Error()
+			code = http.StatusServiceUnavailable
+		}
+		resp.Header().Set("Content-Type", "application/json")
+		resp.WriteHeader(code)
+		json.NewEncoder(resp).Encode(status)
+	})
+	healthSrv := &http.Server{Addr: ":9092", Handler: healthMux}
+	go func() {
+		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("health server error", "error", err)
+		}
+	}()
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 
 	logger.Info("shutdown signal received", "signal", sig)
+	healthSrv.Shutdown(context.Background())
 	writerCancel()
 	w.Stop()
 	logger.Info("dbwriter shutdown complete")

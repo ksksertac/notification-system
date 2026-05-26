@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -69,6 +71,28 @@ func run() error {
 	}, logger, nil)
 	sched.Start(schedCtx)
 
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		status := map[string]string{"status": "healthy"}
+		code := http.StatusOK
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			status["status"] = "unhealthy"
+			status["redis"] = err.Error()
+			code = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(status)
+	})
+	healthSrv := &http.Server{Addr: ":9091", Handler: mux}
+	go func() {
+		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("health server error", "error", err)
+		}
+	}()
+
 	logger.Info("scheduler running",
 		"poll_interval", cfg.Scheduler.PollInterval,
 		"batch_size", cfg.Scheduler.BatchSize,
@@ -79,6 +103,7 @@ func run() error {
 	sig := <-quit
 
 	logger.Info("shutdown signal received", "signal", sig)
+	healthSrv.Shutdown(context.Background())
 	schedCancel()
 	sched.Stop()
 	logger.Info("scheduler shutdown complete")

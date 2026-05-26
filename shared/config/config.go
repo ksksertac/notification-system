@@ -180,6 +180,21 @@ func (c *Config) validate() error {
 	if c.DB.Password == "notification_secret" {
 		slog.Warn("DB_PASSWORD is using the default hardcoded value; set DB_PASSWORD env var for production")
 	}
+	if c.Provider.WebhookURL == "https://webhook.site/test" {
+		slog.Warn("WEBHOOK_URL is using the default test value; set WEBHOOK_URL env var for production")
+	}
+	if c.Retry.MaxAttempts < 1 {
+		return fmt.Errorf("RETRY_MAX_ATTEMPTS must be at least 1")
+	}
+	if c.Retry.BaseDelay <= 0 {
+		return fmt.Errorf("RETRY_BASE_DELAY must be greater than 0")
+	}
+	if c.CB.FailureThreshold < 1 {
+		return fmt.Errorf("CB_FAILURE_THRESHOLD must be at least 1")
+	}
+	if c.Server.Port == "" {
+		return fmt.Errorf("SERVER_PORT must not be empty")
+	}
 	return nil
 }
 

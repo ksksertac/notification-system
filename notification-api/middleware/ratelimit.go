@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/sertacyildirim/notification-system/shared/domain"
 )
 
 var apiRateLimitScript = redis.NewScript(`
@@ -52,8 +53,13 @@ func RateLimit(redisClient *redis.Client, requestsPerSecond int) func(http.Handl
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", "1")
 				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(map[string]string{
-					"error": fmt.Sprintf("rate limit exceeded (%d req/s), try again later", requestsPerSecond),
+				json.NewEncoder(w).Encode(domain.APIResponse{
+					Success: false,
+					Error: &domain.APIError{
+						Code:    "RATE_LIMIT_EXCEEDED",
+						Message: fmt.Sprintf("rate limit exceeded (%d req/s), try again later", requestsPerSecond),
+					},
+					CorrelationID: GetCorrelationID(r.Context()),
 				})
 				return
 			}

@@ -84,6 +84,12 @@ services:
         condition: service_healthy
       notification-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     deploy:
       replicas: 2
 
@@ -91,6 +97,8 @@ services:
     build:
       context: .
       dockerfile: notification-scheduler/Dockerfile
+    ports:
+      - "9091"
     env_file:
       - notification-scheduler/.env.example
     depends_on:
@@ -98,6 +106,12 @@ services:
         condition: service_healthy
       notification-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     deploy:
       replicas: 2
 
@@ -105,6 +119,8 @@ services:
     build:
       context: .
       dockerfile: notification-dbwriter/Dockerfile
+    ports:
+      - "9092"
     env_file:
       - notification-dbwriter/.env.example
     environment:
@@ -116,6 +132,12 @@ services:
         condition: service_healthy
       notification-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     deploy:
       replicas: 2
 

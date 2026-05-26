@@ -26,6 +26,9 @@ import (
 // @description Event-driven notification system with Redis-first hot/cold tiered storage. Supports SMS, Email, and Push channels with priority queuing, retry logic, and real-time status tracking.
 // @host localhost:8080
 // @BasePath /api/v1
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name X-API-Key
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -105,7 +106,23 @@ func run() error {
 	)
 	workerPool.Start(workerCtx)
 
-	metricsSrv := &http.Server{Addr: ":9090", Handler: metricsRecorder.Handler()}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metricsRecorder.Handler())
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		status := map[string]string{"status": "healthy"}
+		code := http.StatusOK
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			status["status"] = "unhealthy"
+			status["redis"] = err.Error()
+			code = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(status)
+	})
+	metricsSrv := &http.Server{Addr: ":9090", Handler: mux}
 	go func() {
 		logger.Info("metrics server starting", "port", 9090)
 		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
