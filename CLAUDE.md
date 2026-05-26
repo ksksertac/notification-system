@@ -21,6 +21,8 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **Documentation**: README files, architecture diagrams, and this plan document maintained throughout development.
 - **Refactoring**: Migrator moved from API to dbwriter, dead code removed, go.mod versions aligned, sentinel errors, custom Prometheus registries — all AI-guided.
 - **Kubernetes + KEDA**: Local K3s cluster via k3d, KEDA event-driven autoscaling on Redis Stream lag, priority-aware scaling thresholds, one-command setup/demo/teardown scripts.
+- **Code Review Fixes**: Atomic idempotency (Lua script), bounded re-enqueue goroutines, provider response body limit (1MB), Prometheus full scrape coverage (all 4 services), API key enabled by default.
+- **Distributed Tracing**: Correlation ID propagation via `shared/tracing` package (API → Redis Streams → Consumer logs), Jaeger for trace visualization.
 
 ## Key Commands Used
 
@@ -51,7 +53,11 @@ claude "move migrator from API to dbwriter"
 - Lua scripts for all atomic operations (CAS, claim, recovery, create, incrementRetry)
 - No `.env` files in repo — only `.env.example`
 - Structured JSON logging, Prometheus metrics (custom registries) on all services
-- Sentinel errors with `errors.Is()` in API service
+- Sentinel errors with `errors.Is()` in API service (including `ErrIdempotencyConflict`)
 - All background operations use `context.WithTimeout` (no unbounded contexts)
 - Stream messages ACK'd only after all side effects complete
+- Correlation ID propagated across services via `shared/tracing` context key and Redis Stream messages
+- Re-enqueue goroutines bounded by semaphore channel to prevent leak under backpressure
+- Provider response bodies capped at 1 MB (`io.LimitReader`)
 - Docker multi-stage builds, GitHub Actions CI per service
+- Jaeger for distributed tracing (OTLP endpoint on 4317/4318, UI on 16686)

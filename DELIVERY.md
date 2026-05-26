@@ -28,7 +28,7 @@ The system delivers notifications through an external provider (webhook.site) us
 }
 ```
 
-The webhook provider is implemented as a `Provider` interface (`delivery/provider.go`), making it straightforward to swap in a real SMS gateway, email service, or push notification provider without changing the delivery pipeline. The HTTP client is configured with connection pooling (100 max idle connections, 90s idle timeout) and a configurable request timeout to handle slow or unresponsive providers gracefully.
+The webhook provider is implemented as a `Provider` interface (`delivery/provider.go`), making it straightforward to swap in a real SMS gateway, email service, or push notification provider without changing the delivery pipeline. The HTTP client is configured with connection pooling (100 max idle connections, 90s idle timeout) and a configurable request timeout to handle slow or unresponsive providers gracefully. Provider response bodies are capped at 1 MB via `io.LimitReader` to prevent memory exhaustion from oversized or malicious responses.
 
 ---
 
@@ -369,7 +369,7 @@ In-memory timers (e.g., `time.AfterFunc`) are lost when a pod restarts. With Red
 
 ### Why re-enqueue instead of sleep on rate limit / circuit breaker open?
 
-Sleeping inside the worker goroutine would block it from processing other messages. With 5 workers per pod, sleeping on one means 20% throughput reduction. Re-enqueueing with a 500ms delay frees the worker immediately to process the next message from the stream. The delayed re-enqueue is handled in a separate goroutine with its own context timeout.
+Sleeping inside the worker goroutine would block it from processing other messages. With 5 workers per pod, sleeping on one means 20% throughput reduction. Re-enqueueing with a 500ms delay frees the worker immediately to process the next message from the stream. The delayed re-enqueue is handled in a separate goroutine with its own context timeout. To prevent goroutine accumulation under sustained rate limiting or circuit breaker open states, re-enqueue goroutines are bounded by a semaphore channel (`WorkerCount * 2` capacity). When the semaphore is full, re-enqueue attempts are dropped with a warning log — the scheduler's recovery mechanisms will pick up these notifications within seconds.
 
 ### Why per-channel circuit breaker instead of a global one?
 
@@ -418,3 +418,36 @@ This value is a balance between responsiveness and backpressure:
 | **Queue: Weight High**       | `QUEUE_WEIGHT_HIGH`           | `10`      | Messages read per poll from the high-priority stream   |
 | **Queue: Weight Normal**     | `QUEUE_WEIGHT_NORMAL`         | `5`       | Messages read per poll from the normal-priority stream |
 | **Queue: Weight Low**        | `QUEUE_WEIGHT_LOW`            | `2`       | Messages read per poll from the low-priority stream    |
+
+---
+
+## 10. Distributed Tracing
+
+The system propagates a **correlation ID** across all services to enable end-to-end request tracing through the asynchronous pipeline.
+
+### Propagation Flow
+
+```
+Client → API (X-Correlation-ID header)
+  → middleware sets tracing.CorrelationIDKey in context
+    → Publisher embeds correlation_id in Redis Stream message
+      → Consumer reads correlation_id from stream message
+        → All worker logs include correlation_id field
+```
+
+### Implementation
+
+- **Shared context key**: `shared/tracing/context.go` defines a typed context key used by all services — ensures type-safe context propagation without circular imports
+- **API middleware**: Validates or generates a correlation ID (max 64 chars, alphanumeric + hyphens), stores in context
+- **Publisher**: Extracts correlation ID from context, includes as `correlation_id` field in `XADD` values
+- **Consumer**: Parses `correlation_id` from stream message, attaches to structured log output
+- **Jaeger**: Available at `http://localhost:16686` for trace visualization (receives OTLP on port 4318)
+
+### Querying Traces
+
+Filter by correlation ID across services using Grafana Loki:
+```
+{job=~"notification-.*"} |= "abc123-correlation-id"
+```
+
+Or use Jaeger UI to search by service name and trace ID.

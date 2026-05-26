@@ -70,6 +70,7 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 │  Prometheus ──→ Grafana Dashboards (metrics, queue depth, latency)           │
 │  Promtail ──→ Loki ──→ Grafana Logs (structured JSON, correlation ID)       │
 │  Alertmanager ──→ Slack/Teams (critical alerts: failure rate, CB, downtime)  │
+│  Jaeger ──→ Distributed Tracing (correlation ID propagation across services)│
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,6 +86,8 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 | **Correlation ID Validation** | Max 64 chars, alphanumeric + hyphens only — prevents header injection |
 | **Request Body Limit** | 2 MB max body size middleware |
 | **Template Rendering** | `html/template` (not `text/template`) for XSS-safe output |
+| **Provider Response Limit** | `io.LimitReader` caps provider response body at 1 MB — prevents memory exhaustion from malicious/broken providers |
+| **Bounded Re-enqueue** | Semaphore-limited goroutine pool for re-enqueue operations — prevents goroutine leak under sustained rate-limiting or circuit breaker open |
 | **Prometheus Isolation** | Custom registry per service — no global metric conflicts between instances |
 
 ## Services
@@ -114,12 +117,20 @@ cp .env.example .env
 
 All SMS, Email, and Push deliveries will be sent to this URL. You can monitor deliveries in real-time on the webhook.site dashboard.
 
-### 2. Configure Security (Optional)
+### 2. Configure Security
 
 ```bash
-# In .env, set optional security features:
-# API_KEY=your-secret-api-key                           # Protects /api/v1/* routes
-# WS_ALLOWED_ORIGINS=https://example.com,https://app.example.com  # WebSocket origin whitelist
+# API key authentication is enabled by default in docker-compose.yml.
+# To change the key, edit the API_KEY environment variable:
+# API_KEY=changeme-notification-secret                  # Protects /api/v1/* routes
+
+# Optional: restrict WebSocket origins
+# WS_ALLOWED_ORIGINS=https://example.com,https://app.example.com
+```
+
+All API requests to `/api/v1/*` require the `X-API-Key` header:
+```bash
+curl -H "X-API-Key: changeme-notification-secret" http://localhost:8080/api/v1/notifications
 ```
 
 ### 3. Start Services
@@ -137,8 +148,9 @@ docker-compose up --build
 | http://localhost:8080/metrics | Prometheus metrics |
 | ws://localhost:8080/ws | WebSocket |
 | http://localhost:3000 | Grafana (admin/admin) |
-| http://localhost:9091 | Prometheus |
+| http://localhost:9094 | Prometheus |
 | http://localhost:9093 | Alertmanager |
+| http://localhost:16686 | Jaeger (distributed tracing) |
 
 ### Kubernetes — K3s + KEDA (Event-Driven Autoscaling)
 
@@ -234,7 +246,7 @@ All critical Redis operations are performed via Lua scripts to ensure atomicity:
 
 | Operation | What it does atomically |
 |-----------|------------------------|
-| **Create** | HSET + all index updates (status, channel, created_at, batch, idempotency, schedule) + persist event — single atomic operation |
+| **Create** | Idempotency key check + HSET + all index updates (status, channel, created_at, batch, idempotency, schedule) + persist event — single atomic operation, prevents duplicate creation under concurrent requests with same idempotency key |
 | **UpdateStatus (CAS)** | Read current status + read score from idx:created_at + HSET + ZREM/ZADD status indexes + persist event |
 | **IncrementRetry** | HINCRBY retry_count + HSET next fields + ZREM/ZADD status indexes + ZADD idx:retry + persist event |
 | **Recovery scripts** | Status reset + ZREM/ZADD index updates + persist event — all inside one Lua call |
@@ -429,6 +441,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 | API Docs | Swagger (swaggo) |
 | Metrics | Prometheus (custom registries) + Grafana |
 | Logging | Structured JSON + Loki + Promtail |
+| Tracing | Jaeger (correlation ID propagation via Redis Streams) |
 | Alerting | Alertmanager (Slack/Teams webhook) |
 | CI/CD | GitHub Actions (per service) |
 
@@ -451,6 +464,10 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **API Key Authentication**: timing-safe comparison via `subtle.ConstantTimeCompare`, optional per environment
 - **WebSocket Security**: per-request origin validation, ping/pong heartbeat (30s/60s), max 1000 connections
 - **Template Caching**: compiled templates cached in `sync.Map`, `html/template` for XSS safety
+- **Atomic Idempotency**: Lua `createScript` checks the idempotency key (`GET`) before writing — prevents duplicate notifications under concurrent requests with the same key (eliminates TOCTOU race between `GetByIdempotencyKey` and `Create`)
+- **Distributed Tracing**: Correlation ID propagated from API → Redis Stream messages → Consumer logs via `shared/tracing` package. Jaeger collects traces for cross-service visibility
+- **Bounded Re-enqueue**: Semaphore channel (`WorkerCount*2`) limits concurrent re-enqueue goroutines — prevents goroutine leak under sustained rate limiting or circuit breaker open states
+- **Provider Response Limit**: `io.LimitReader(resp.Body, 1MB)` prevents memory exhaustion from oversized provider responses
 - **Ack-After-Side-Effects**: consumer ACKs stream messages only after all status updates and side effects complete
 - **Bounded Contexts**: all background operations use `context.WithTimeout` — no unbounded `context.Background()` calls
 - **Sentinel Errors**: `errors.Is()` for error classification instead of string matching
@@ -475,7 +492,8 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 │   ├── redis/                   # Redis connection pool + key helpers
 │   ├── domain/                  # Entities, DTOs, validation, state machine
 │   ├── queue/                   # Redis Streams publisher/consumer/pipeline
-│   └── repository/              # Notification repository (Redis-backed)
+│   ├── repository/              # Notification repository (Redis-backed)
+│   └── tracing/                 # Shared correlation ID context key for cross-service tracing
 │
 ├── notification-api/            # API microservice
 │   ├── Dockerfile
@@ -501,11 +519,12 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 │   ├── migrations/              # SQL migration files
 │   └── writer/                  # persist:queue consumer, batch INSERT, cleanup
 │
-├── observability/               # Monitoring & alerting configs
-│   ├── prometheus/              # Scrape config + alert rules
+├── observability/               # Monitoring, alerting, and tracing configs
+│   ├── prometheus/              # Scrape config + alert rules (all 4 services)
 │   ├── alertmanager/            # Slack/Teams webhook routing
 │   ├── grafana/                 # Dashboards + datasource provisioning
 │   └── promtail/                # Docker log collection pipeline
+│   # Jaeger runs as a Docker container (jaegertracing/all-in-one)
 │
 ├── k8s/                         # Kubernetes (K3s + KEDA) local deployment
 │   ├── setup.sh                 # One-command: k3d cluster + KEDA + deploy all

@@ -164,6 +164,21 @@ All services scale by adding pods. No ring hash, no Zookeeper, no partition reba
 - [x] Teardown script (`./k8s/teardown.sh`): cleanup cluster + Docker images
 - [x] Documentation updated: README, PLAN, loadtest README, service READMEs
 
+### Phase 11: Code Review Fixes & Distributed Tracing
+- [x] **Critical — Webhook URL**: Replaced placeholder `your-uuid-here` with real webhook.site UUID across all `.env.example` files
+- [x] **Critical — Atomic Idempotency**: `createScript` Lua now checks idempotency key (`GET`) before any writes — eliminates TOCTOU race between `GetByIdempotencyKey` and `Create` under concurrent requests
+- [x] **Critical — ErrIdempotencyConflict**: New sentinel error in repository package; service layer catches it and returns existing notification
+- [x] **Medium — API Key Default**: `API_KEY=changeme-notification-secret` added to `.env.example` and `docker-compose.yml` — auth enabled by default
+- [x] **Medium — Prometheus Scrape**: Added `notification-scheduler:9091` and `notification-dbwriter:9092` scrape targets — all 4 services now monitored
+- [x] **Medium — Prometheus Port**: Changed host port `9091` → `9094` to avoid conflict with scheduler containers
+- [x] **Medium — Provider Response Limit**: `io.LimitReader(resp.Body, 1MB)` in webhook provider — prevents memory exhaustion from oversized responses
+- [x] **Medium — Bounded Re-enqueue**: Semaphore channel (`WorkerCount*2`) limits concurrent re-enqueue goroutines — prevents goroutine leak under sustained rate limiting
+- [x] **Bonus — Distributed Tracing (Jaeger)**: Jaeger all-in-one added to docker-compose (OTLP on 4317/4318, UI on 16686)
+- [x] **Bonus — Correlation ID Propagation**: New `shared/tracing` package defines shared context key; API middleware sets it, publisher embeds in stream messages, consumer extracts and logs it — full cross-service trace visibility
+- [x] **Docs — README.md**: Updated URLs, security section, architecture diagram, tech stack, design decisions, project structure
+- [x] **Docs — PLAN.md**: Added Phase 11 documenting all fixes
+- [x] **Docs — DELIVERY.md**: Updated with response limit and bounded re-enqueue details
+
 ## Trade-offs Accepted
 
 | Trade-off | Why |
