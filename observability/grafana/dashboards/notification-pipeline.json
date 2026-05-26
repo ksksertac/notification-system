@@ -1,6 +1,6 @@
 {
-  "title": "Service Health & Resources",
-  "uid": "service-health",
+  "title": "Notification Pipeline",
+  "uid": "notification-pipeline",
   "timezone": "browser",
   "refresh": "10s",
   "time": {
@@ -10,10 +10,10 @@
   "templating": {
     "list": [
       {
-        "name": "job",
+        "name": "channel",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values(up, job)",
+        "query": "label_values(notifications_delivered_total, channel)",
         "multi": true,
         "includeAll": true,
         "current": {
@@ -26,7 +26,7 @@
   },
   "panels": [
     {
-      "title": "Service Status",
+      "title": "Pipeline Overview",
       "type": "row",
       "gridPos": {
         "h": 1,
@@ -37,47 +37,30 @@
       "collapsed": false
     },
     {
-      "title": "Service Up / Down",
+      "title": "Delivered / sec",
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 8,
+        "w": 4,
         "x": 0,
         "y": 1
       },
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "up{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}}"
+          "expr": "sum(rate(notifications_delivered_total{channel=~\"$channel\"}[1m]))",
+          "legendFormat": "delivered/s"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "DOWN",
-                  "color": "red"
-                },
-                "1": {
-                  "text": "UP",
-                  "color": "green"
-                }
-              }
-            }
-          ],
+          "unit": "short",
+          "decimals": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "value": null,
-                "color": "red"
-              },
-              {
-                "value": 1,
                 "color": "green"
               }
             ]
@@ -85,13 +68,56 @@
         }
       },
       "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "auto"
+        "colorMode": "value",
+        "graphMode": "area"
       }
     },
     {
-      "title": "Total Goroutines",
+      "title": "Failed / sec",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(notifications_failed_total{channel=~\"$channel\"}[1m]))",
+          "legendFormat": "failed/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 0.1,
+                "color": "yellow"
+              },
+              {
+                "value": 1,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "title": "Failure Rate %",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -102,12 +128,14 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum(go_goroutines{job=~\"$job\"})",
-          "legendFormat": "goroutines"
+          "expr": "sum(rate(notifications_failed_total{channel=~\"$channel\"}[1m])) / (sum(rate(notifications_delivered_total{channel=~\"$channel\"}[1m])) + sum(rate(notifications_failed_total{channel=~\"$channel\"}[1m]))) * 100",
+          "legendFormat": "failure %"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "unit": "percent",
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -116,11 +144,11 @@
                 "color": "green"
               },
               {
-                "value": 500,
+                "value": 5,
                 "color": "yellow"
               },
               {
-                "value": 1000,
+                "value": 20,
                 "color": "red"
               }
             ]
@@ -133,7 +161,7 @@
       }
     },
     {
-      "title": "Total Memory (RSS)",
+      "title": "P95 Delivery Latency",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -144,13 +172,14 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum(process_resident_memory_bytes{job=~\"$job\"})",
-          "legendFormat": "RSS"
+          "expr": "histogram_quantile(0.95, sum(rate(notification_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])) by (le))",
+          "legendFormat": "p95"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
+          "unit": "s",
+          "decimals": 3,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -159,11 +188,11 @@
                 "color": "green"
               },
               {
-                "value": 536870912,
+                "value": 1,
                 "color": "yellow"
               },
               {
-                "value": 1073741824,
+                "value": 5,
                 "color": "red"
               }
             ]
@@ -176,7 +205,7 @@
       }
     },
     {
-      "title": "Total CPU Usage",
+      "title": "Rate Limit Hits",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -187,14 +216,14 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum(rate(process_cpu_seconds_total{job=~\"$job\"}[1m]))",
-          "legendFormat": "CPU cores"
+          "expr": "sum(rate(rate_limit_hits_total[1m]))",
+          "legendFormat": "hits/s"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 3,
+          "decimals": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -203,11 +232,11 @@
                 "color": "green"
               },
               {
-                "value": 0.8,
+                "value": 1,
                 "color": "yellow"
               },
               {
-                "value": 1.5,
+                "value": 10,
                 "color": "red"
               }
             ]
@@ -220,7 +249,7 @@
       }
     },
     {
-      "title": "Open File Descriptors",
+      "title": "Circuit Breaker Opens",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -231,12 +260,14 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum(process_open_fds{job=~\"$job\"})",
-          "legendFormat": "FDs"
+          "expr": "sum(rate(circuit_breaker_open_total[1m]))",
+          "legendFormat": "opens/s"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -245,11 +276,11 @@
                 "color": "green"
               },
               {
-                "value": 500,
+                "value": 0.01,
                 "color": "yellow"
               },
               {
-                "value": 900,
+                "value": 0.1,
                 "color": "red"
               }
             ]
@@ -262,7 +293,7 @@
       }
     },
     {
-      "title": "CPU & Memory",
+      "title": "Queue & Throughput",
       "type": "row",
       "gridPos": {
         "h": 1,
@@ -273,7 +304,7 @@
       "collapsed": false
     },
     {
-      "title": "CPU Usage (cores)",
+      "title": "Queue Depth by Priority",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -284,74 +315,92 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "rate(process_cpu_seconds_total{job=~\"$job\"}[1m])",
-          "legendFormat": "{{job}} \u2014 {{instance}}"
+          "expr": "queue_depth",
+          "legendFormat": "{{stream}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "high"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "normal"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "low"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "Deliveries vs Failures / sec by Channel",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(notifications_delivered_total{channel=~\"$channel\"}[1m])",
+          "legendFormat": "delivered \u2014 {{channel}}"
+        },
+        {
+          "expr": "rate(notifications_failed_total{channel=~\"$channel\"}[1m])",
+          "legendFormat": "failed \u2014 {{channel}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "custom": {
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "drawStyle": "line",
-            "showPoints": "never"
-          }
-        }
-      }
-    },
-    {
-      "title": "Memory (RSS)",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 6
-      },
-      "datasource": "Prometheus",
-      "targets": [
-        {
-          "expr": "process_resident_memory_bytes{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} RSS"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "custom": {
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "drawStyle": "line",
-            "showPoints": "never"
-          }
-        }
-      }
-    },
-    {
-      "title": "Go Heap Memory",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      },
-      "datasource": "Prometheus",
-      "targets": [
-        {
-          "expr": "go_memstats_heap_alloc_bytes{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} heap alloc"
-        },
-        {
-          "expr": "go_memstats_heap_inuse_bytes{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} heap in-use"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "custom": {
             "fillOpacity": 10,
             "lineWidth": 2,
             "drawStyle": "line",
@@ -361,72 +410,45 @@
       }
     },
     {
-      "title": "Go Memory Stats",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 14
-      },
-      "datasource": "Prometheus",
-      "targets": [
-        {
-          "expr": "go_memstats_alloc_bytes{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} alloc"
-        },
-        {
-          "expr": "go_memstats_sys_bytes{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} sys"
-        },
-        {
-          "expr": "go_memstats_stack_inuse_bytes{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} stack"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "custom": {
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "drawStyle": "line",
-            "showPoints": "never"
-          }
-        }
-      }
-    },
-    {
-      "title": "Go Runtime",
+      "title": "Delivery Latency",
       "type": "row",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 14
       },
       "collapsed": false
     },
     {
-      "title": "Goroutines",
+      "title": "Latency Percentiles by Channel",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 23
+        "y": 15
       },
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "go_goroutines{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}}"
+          "expr": "histogram_quantile(0.50, sum(rate(notification_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])) by (le, channel))",
+          "legendFormat": "p50 \u2014 {{channel}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(notification_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])) by (le, channel))",
+          "legendFormat": "p95 \u2014 {{channel}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(notification_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])) by (le, channel))",
+          "legendFormat": "p99 \u2014 {{channel}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "unit": "s",
           "custom": {
-            "fillOpacity": 15,
+            "fillOpacity": 5,
             "lineWidth": 2,
             "drawStyle": "line",
             "showPoints": "never"
@@ -435,23 +457,19 @@
       }
     },
     {
-      "title": "GC Duration (p99)",
+      "title": "Avg Delivery Latency by Channel",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 23
+        "w": 12,
+        "x": 12,
+        "y": 15
       },
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "go_gc_duration_seconds{job=~\"$job\", quantile=\"0.99\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} p99"
-        },
-        {
-          "expr": "go_gc_duration_seconds{job=~\"$job\", quantile=\"0.5\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} p50"
+          "expr": "sum(rate(notification_delivery_duration_seconds_sum{channel=~\"$channel\"}[1m])) by (channel) / sum(rate(notification_delivery_duration_seconds_count{channel=~\"$channel\"}[1m])) by (channel)",
+          "legendFormat": "avg \u2014 {{channel}}"
         }
       ],
       "fieldConfig": {
@@ -467,23 +485,98 @@
       }
     },
     {
-      "title": "Threads & File Descriptors",
+      "title": "Resilience",
+      "type": "row",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "collapsed": false
+    },
+    {
+      "title": "Rate Limit Hits over Time",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 23
+        "w": 12,
+        "x": 0,
+        "y": 24
       },
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "go_threads{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} threads"
+          "expr": "rate(rate_limit_hits_total[1m])",
+          "legendFormat": "{{instance}} rate limit hits/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "drawStyle": "line",
+            "showPoints": "never"
+          },
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          }
+        }
+      }
+    },
+    {
+      "title": "Circuit Breaker Opens over Time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(circuit_breaker_open_total[1m])",
+          "legendFormat": "{{instance}} CB opens/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "drawStyle": "line",
+            "showPoints": "never"
+          },
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          }
+        }
+      }
+    },
+    {
+      "title": "Total Delivered vs Failed (cumulative)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(notifications_delivered_total{channel=~\"$channel\"}) by (channel)",
+          "legendFormat": "delivered \u2014 {{channel}}"
         },
         {
-          "expr": "process_open_fds{job=~\"$job\"}",
-          "legendFormat": "{{job}} \u2014 {{instance}} open FDs"
+          "expr": "sum(notifications_failed_total{channel=~\"$channel\"}) by (channel)",
+          "legendFormat": "failed \u2014 {{channel}}"
         }
       ],
       "fieldConfig": {

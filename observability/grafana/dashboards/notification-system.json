@@ -1,108 +1,146 @@
 {
-  "dashboard": {
-    "title": "Notification System",
-    "uid": "notification-system",
-    "timezone": "browser",
-    "refresh": "10s",
-    "panels": [
-      {
-        "title": "Queue Depth",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
-        "datasource": "Prometheus",
-        "targets": [
-          {
-            "expr": "queue_depth",
-            "legendFormat": "{{stream}}"
-          }
-        ]
+  "title": "Notification System",
+  "uid": "notification-system",
+  "timezone": "browser",
+  "refresh": "10s",
+  "panels": [
+    {
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
       },
-      {
-        "title": "Deliveries / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
-        "datasource": "Prometheus",
-        "targets": [
-          {
-            "expr": "rate(notifications_delivered_total[1m])",
-            "legendFormat": "{{channel}}"
-          }
-        ]
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "queue_depth",
+          "legendFormat": "{{stream}}"
+        }
+      ]
+    },
+    {
+      "title": "Deliveries / sec",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
       },
-      {
-        "title": "Failures / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
-        "datasource": "Prometheus",
-        "targets": [
-          {
-            "expr": "rate(notifications_failed_total[1m])",
-            "legendFormat": "{{channel}}"
-          }
-        ]
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(notifications_delivered_total[1m])",
+          "legendFormat": "{{channel}}"
+        }
+      ]
+    },
+    {
+      "title": "Failures / sec",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
       },
-      {
-        "title": "Delivery Latency (p95)",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
-        "datasource": "Prometheus",
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(notification_delivery_duration_seconds_bucket[5m]))",
-            "legendFormat": "p95 {{channel}}"
-          }
-        ]
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(notifications_failed_total[1m])",
+          "legendFormat": "{{channel}}"
+        }
+      ]
+    },
+    {
+      "title": "Delivery Latency (p95)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
       },
-      {
-        "title": "HTTP Request Rate",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
-        "datasource": "Prometheus",
-        "targets": [
-          {
-            "expr": "rate(http_requests_total[1m])",
-            "legendFormat": "{{method}} {{path}} {{status}}"
-          }
-        ]
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(notification_delivery_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 {{channel}}"
+        }
+      ]
+    },
+    {
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
       },
-      {
-        "title": "Rate Limit & Circuit Breaker",
-        "type": "stat",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
-        "datasource": "Prometheus",
-        "targets": [
-          {
-            "expr": "rate_limit_hits_total",
-            "legendFormat": "Rate Limit Hits"
-          },
-          {
-            "expr": "circuit_breaker_open_total",
-            "legendFormat": "CB Open Events"
-          }
-        ]
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(http_requests_total[1m])",
+          "legendFormat": "{{method}} {{path}} {{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Rate Limit & Circuit Breaker",
+      "type": "stat",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
       },
-      {
-        "title": "Logs — notification-api",
-        "type": "logs",
-        "gridPos": { "h": 10, "w": 12, "x": 0, "y": 16 },
-        "datasource": "Loki",
-        "targets": [
-          {
-            "expr": "{container=~\".*notification-api.*\"}"
-          }
-        ]
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate_limit_hits_total",
+          "legendFormat": "Rate Limit Hits"
+        },
+        {
+          "expr": "circuit_breaker_open_total",
+          "legendFormat": "CB Open Events"
+        }
+      ]
+    },
+    {
+      "title": "Logs \u2014 notification-api",
+      "type": "logs",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 16
       },
-      {
-        "title": "Logs — notification-consumer",
-        "type": "logs",
-        "gridPos": { "h": 10, "w": 12, "x": 12, "y": 16 },
-        "datasource": "Loki",
-        "targets": [
-          {
-            "expr": "{container=~\".*notification-consumer.*\"}"
-          }
-        ]
-      }
-    ]
-  }
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "{container=~\".*notification-api.*\"}"
+        }
+      ]
+    },
+    {
+      "title": "Logs \u2014 notification-consumer",
+      "type": "logs",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "{container=~\".*notification-consumer.*\"}"
+        }
+      ]
+    }
+  ]
 }
