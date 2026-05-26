@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -11,7 +12,16 @@ import (
 )
 
 func NewPostgres(cfg config.DBConfig) (*sqlx.DB, error) {
-	db, err := sqlx.Open("postgres", cfg.DSN())
+	dsn := cfg.DSN()
+	if !strings.Contains(dsn, "binary_parameters=yes") {
+		if strings.Contains(dsn, "?") {
+			dsn += "&binary_parameters=yes"
+		} else {
+			dsn += "?binary_parameters=yes"
+		}
+	}
+
+	db, err := sqlx.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}

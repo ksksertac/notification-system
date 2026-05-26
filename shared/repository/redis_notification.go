@@ -1181,6 +1181,9 @@ func SplitPersistActions(events []*PersistEvent) (creates []*domain.Notification
 		case evt.Action == "create" && evt.Notification != nil:
 			creates = append(creates, evt.Notification)
 		case strings.HasPrefix(evt.Action, "update_status") || evt.Action == "increment_retry" || evt.Action == "move_to_dlq":
+			if evt.Extra["id"] == "" {
+				continue
+			}
 			m := map[string]string{"action": evt.Action}
 			for k, v := range evt.Extra {
 				m[k] = v
