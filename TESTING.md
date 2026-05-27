@@ -62,15 +62,33 @@ go test -tags=e2e -v -timeout 5m ./...
 ### Full Integration with Docker
 
 ```bash
-# Start all services + dependencies for integration testing
-docker-compose -f docker-compose.test.yml up --build
+# Start all services + dependencies
+docker compose up -d --build
 
-# Run tests against Docker environment
+# Run e2e tests against the running stack
 REDIS_ADDR=localhost:6379 go test -tags=e2e -v ./tests/e2e/...
 
 # Tear down after tests
-docker-compose -f docker-compose.test.yml down -v
+docker compose down -v
 ```
+
+### Local Testing with Mock Provider
+
+To test the full delivery flow without depending on webhook.site, set `PROVIDER_TYPE=mock` in the consumer's environment. The mock provider returns `202 Accepted` with a generated `messageId`, simulating a successful external delivery:
+
+```bash
+# In docker-compose.yml or .env, add to notification-consumer environment:
+PROVIDER_TYPE=mock
+PROVIDER_MOCK_LATENCY=50ms   # optional simulated latency
+
+# Then start the stack — notifications will reach "delivered" status locally
+docker compose up -d --build
+```
+
+This is useful for:
+- Demonstrating the full happy-path (`pending → queued → processing → delivered`)
+- Load testing without hitting external rate limits
+- Development without internet access
 
 ### Quick Check (CI-style)
 
@@ -298,6 +316,8 @@ PRs are blocked from merging unless all checks pass.
 ## E2E Test Scenarios
 
 The E2E tests (`tests/e2e/notification_flow_test.go`) use **real handlers, services, repositories, and middleware** wired up against miniredis — no mocks. Each test creates a full `testEnv` with a Chi router, real service layer, real Redis repository, and real middleware stack (correlation ID, rate limiting, logging, body size limit).
+
+> **Scope note:** E2E tests cover the API layer through to Redis state verification. They do **not** test actual consumer delivery (webhook calls), which is covered by the consumer's own unit and integration tests. To test the full delivery flow end-to-end, use `docker compose up` with `PROVIDER_TYPE=mock` (see above).
 
 | # | Scenario | What It Validates |
 |---|----------|-------------------|

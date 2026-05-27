@@ -1255,3 +1255,103 @@ func TestScheduler_RequeueRecovery(t *testing.T) {
 		}
 	})
 }
+
+func TestScheduler_RequeueRecoveryFullFlow(t *testing.T) {
+	t.Run("requeue-ready notifications are published to correct priority streams", func(t *testing.T) {
+		past := time.Now().Add(-1 * time.Minute)
+		requeueReady := []*domain.Notification{
+			{
+				ID:       uuid.New(),
+				Channel:  domain.ChannelSMS,
+				Priority: domain.PriorityHigh,
+				Status:   domain.StatusQueued,
+				Content:  "High priority requeue",
+			},
+			{
+				ID:       uuid.New(),
+				Channel:  domain.ChannelEmail,
+				Priority: domain.PriorityLow,
+				Status:   domain.StatusQueued,
+				Content:  "Low priority requeue",
+			},
+			{
+				ID:       uuid.New(),
+				Channel:  domain.ChannelPush,
+				Priority: domain.PriorityNormal,
+				Status:   domain.StatusQueued,
+				Content:  "Normal priority requeue",
+				ScheduledAt: &past,
+			},
+		}
+
+		callCount := int32(0)
+		repo := &mockRepo{}
+		repo.getRequeueReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			if atomic.AddInt32(&callCount, 1) == 1 {
+				return requeueReady, nil
+			}
+			return nil, nil
+		}
+
+		pub := &mockPublisher{}
+		var publishedPriorities []domain.Priority
+		pub.publishBatchFn = func(ctx context.Context, notifications []*domain.Notification) error {
+			for _, n := range notifications {
+				publishedPriorities = append(publishedPriorities, n.Priority)
+			}
+			return nil
+		}
+
+		s := newTestScheduler(repo, pub)
+		s.requeueInterval = 50 * time.Millisecond
+
+		ctx := context.Background()
+		s.processRequeueReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+
+		if pub.publishCount != 3 {
+			t.Fatalf("expected 3 requeue-ready published, got %d", pub.publishCount)
+		}
+
+		priorityCounts := map[domain.Priority]int{}
+		for _, p := range publishedPriorities {
+			priorityCounts[p]++
+		}
+		if priorityCounts[domain.PriorityHigh] != 1 {
+			t.Errorf("expected 1 high priority, got %d", priorityCounts[domain.PriorityHigh])
+		}
+		if priorityCounts[domain.PriorityNormal] != 1 {
+			t.Errorf("expected 1 normal priority, got %d", priorityCounts[domain.PriorityNormal])
+		}
+		if priorityCounts[domain.PriorityLow] != 1 {
+			t.Errorf("expected 1 low priority, got %d", priorityCounts[domain.PriorityLow])
+		}
+	})
+
+	t.Run("requeue recovery loop fires on interval", func(t *testing.T) {
+		var callCount int32
+		repo := &mockRepo{}
+		repo.getRequeueReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			atomic.AddInt32(&callCount, 1)
+			return nil, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+		s.requeueInterval = 50 * time.Millisecond
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		s.wg.Add(1)
+		go s.runRequeueRecovery(ctx)
+		s.wg.Wait()
+
+		calls := atomic.LoadInt32(&callCount)
+		if calls < 2 {
+			t.Errorf("expected at least 2 requeue recovery calls in 200ms with 50ms interval, got %d", calls)
+		}
+	})
+}

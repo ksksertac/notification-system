@@ -2246,3 +2246,242 @@ func TestProcessMessage_CircuitBreakerMaxRequeueExceeded(t *testing.T) {
 		repo.mu.Unlock()
 	})
 }
+
+func TestProcessMessage_CBBackoffUsesCorrectDelayAndPersistsRequeue(t *testing.T) {
+	nID := uuid.New()
+	requeueCount := 3
+
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:           nID,
+		Status:       domain.StatusQueued,
+		Channel:      domain.ChannelSMS,
+		Priority:     domain.PriorityHigh,
+		RequeueCount: requeueCount,
+	}
+
+	consumer := &mockConsumer{}
+	publisher := &mockPublisher{}
+	metrics := &mockMetrics{}
+
+	cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		OpenDuration:     1 * time.Hour,
+		HalfOpenMax:      1,
+	})
+	cb := cbRegistry.Get("sms")
+	cb.RecordFailure()
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.consumer = consumer
+		o.publisher = publisher
+	})
+	wp.cbRegistry = cbRegistry
+	wp.metrics = metrics
+
+	msg := queue.Message{
+		ID:             "msg-cb-backoff-integration",
+		StreamName:     queue.StreamHigh,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+905551234567",
+		Content:        "CB backoff integration test",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	if len(repo.requeueSetIDs) != 1 {
+		t.Fatalf("expected 1 requeue set entry, got %d", len(repo.requeueSetIDs))
+	}
+	if repo.requeueSetIDs[0] != nID {
+		t.Errorf("expected requeue for %s, got %s", nID, repo.requeueSetIDs[0])
+	}
+	if len(repo.dlqEntries) != 0 {
+		t.Error("should not move to DLQ when under max requeue count")
+	}
+
+	expectedDelay := cbBackoffDelay(requeueCount + 1)
+	if expectedDelay != 4*time.Second {
+		t.Errorf("expected cbBackoffDelay(%d) = 4s, got %v", requeueCount+1, expectedDelay)
+	}
+
+	statusFound := false
+	for _, su := range repo.statusUpdates {
+		if su.id == nID && su.from == domain.StatusProcessing && su.to == domain.StatusQueued {
+			statusFound = true
+			break
+		}
+	}
+	if !statusFound {
+		t.Error("expected status transition processing → queued before requeue")
+	}
+
+	metrics.mu.Lock()
+	if metrics.circuitBreakerOpens != 1 {
+		t.Errorf("expected 1 circuit breaker open metric, got %d", metrics.circuitBreakerOpens)
+	}
+	metrics.mu.Unlock()
+}
+
+func TestProcessMessage_ConcurrentMaxRequeueSafety(t *testing.T) {
+	const workerCount = 10
+	nID := uuid.New()
+
+	var dlqMu sync.Mutex
+	dlqCount := 0
+	requeueCount := 0
+
+	repo := &mockRepo{notifications: make(map[uuid.UUID]*domain.Notification)}
+	repo.notifications[nID] = &domain.Notification{
+		ID:           nID,
+		Status:       domain.StatusQueued,
+		Channel:      domain.ChannelEmail,
+		Priority:     domain.PriorityNormal,
+		RequeueCount: domain.MaxRequeueCount - 1,
+	}
+
+	origMoveToDLQ := repo.MoveToDLQ
+	_ = origMoveToDLQ
+
+	casRepo := &concurrentCASRepo{
+		mockRepo:     repo,
+		dlqCount:     &dlqCount,
+		requeueCount: &requeueCount,
+		mu:           &dlqMu,
+	}
+
+	consumer := &mockConsumer{}
+	metrics := &mockMetrics{}
+	publisher := &mockPublisher{}
+
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+
+			cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+				FailureThreshold: 1,
+				OpenDuration:     1 * time.Hour,
+				HalfOpenMax:      1,
+			})
+			cb := cbRegistry.Get("email")
+			cb.RecordFailure()
+
+			wp := &WorkerPool{
+				cfg: WorkerPoolConfig{
+					ConsumerGroup: "test-group",
+					WorkerCount:   1,
+					WeightHigh:    10,
+					WeightNormal:  5,
+					WeightLow:     2,
+					ClaimMinIdle:  30 * time.Second,
+					ClaimInterval: 10 * time.Second,
+					MaxRetries:    3,
+				},
+				consumer:    consumer,
+				publisher:   publisher,
+				provider:    &mockProvider{},
+				rateLimiter: &mockRateLimiter{allowed: true},
+				cbRegistry:  cbRegistry,
+				retry:       &mockRetryStrategy{shouldRetry: true, nextDelay: 100 * time.Millisecond},
+				repo:        casRepo,
+				broadcaster: &mockBroadcaster{},
+				metrics:     metrics,
+				tmplEngine:  &mockTemplateEngine{},
+				logger:      slog.Default(),
+			}
+
+			msg := queue.Message{
+				ID:             fmt.Sprintf("msg-concurrent-%d", i),
+				StreamName:     queue.StreamNormal,
+				NotificationID: nID,
+				Channel:        domain.ChannelEmail,
+				Recipient:      "user@example.com",
+				Content:        "Concurrent max requeue test",
+			}
+			wp.processMessage(context.Background(), msg)
+		}()
+	}
+	wg.Wait()
+
+	dlqMu.Lock()
+	totalDLQ := dlqCount
+	totalRequeue := requeueCount
+	dlqMu.Unlock()
+
+	totalActions := totalDLQ + totalRequeue
+	if totalActions == 0 {
+		t.Fatal("expected at least one DLQ or requeue action")
+	}
+	if totalDLQ > 1 {
+		t.Errorf("expected at most 1 DLQ entry from concurrent workers, got %d", totalDLQ)
+	}
+}
+
+type concurrentCASRepo struct {
+	*mockRepo
+	dlqCount     *int
+	requeueCount *int
+	mu           *sync.Mutex
+	casOnce      sync.Once
+	casWinner    bool
+}
+
+func (r *concurrentCASRepo) UpdateStatus(ctx context.Context, id uuid.UUID, from, to domain.Status) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.mockRepo.mu.Lock()
+	n, ok := r.mockRepo.notifications[id]
+	r.mockRepo.mu.Unlock()
+
+	if !ok || n.Status != from {
+		return false, nil
+	}
+
+	r.mockRepo.mu.Lock()
+	n.Status = to
+	r.mockRepo.statusUpdates = append(r.mockRepo.statusUpdates, statusUpdate{id: id, from: from, to: to})
+	r.mockRepo.mu.Unlock()
+	return true, nil
+}
+
+func (r *concurrentCASRepo) MoveToDLQ(ctx context.Context, n *domain.Notification, errorMsg string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	*r.dlqCount++
+	return nil
+}
+
+func (r *concurrentCASRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	*r.requeueCount++
+	return nil
+}
+
+func (r *concurrentCASRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Notification, error) {
+	r.mockRepo.mu.Lock()
+	defer r.mockRepo.mu.Unlock()
+	n, ok := r.mockRepo.notifications[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *n
+	return &cp, nil
+}
+
+func (r *concurrentCASRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
+	return r.UpdateStatus(ctx, id, from, to)
+}
+
+func (r *concurrentCASRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}

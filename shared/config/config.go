@@ -80,8 +80,10 @@ type RetryConfig struct {
 }
 
 type ProviderConfig struct {
+	Type       string
 	WebhookURL string
 	Timeout    time.Duration
+	MockLatency time.Duration
 }
 
 type SchedulerConfig struct {
@@ -145,8 +147,10 @@ func Load() (*Config, error) {
 			MaxDelay:    envDurationOrDefault("RETRY_MAX_DELAY", 60*time.Second),
 		},
 		Provider: ProviderConfig{
-			WebhookURL: envOrDefault("WEBHOOK_URL", "https://webhook.site/test"),
-			Timeout:    envDurationOrDefault("PROVIDER_TIMEOUT", 10*time.Second),
+			Type:        envOrDefault("PROVIDER_TYPE", "webhook"),
+			WebhookURL:  envOrDefault("WEBHOOK_URL", "https://webhook.site/test"),
+			Timeout:     envDurationOrDefault("PROVIDER_TIMEOUT", 10*time.Second),
+			MockLatency: envDurationOrDefault("PROVIDER_MOCK_LATENCY", 50*time.Millisecond),
 		},
 		Scheduler: SchedulerConfig{
 			PollInterval:     envDurationOrDefault("SCHEDULER_POLL_INTERVAL", 5*time.Second),

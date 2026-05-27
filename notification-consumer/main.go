@@ -71,7 +71,15 @@ func run() error {
 	publisher := queue.NewRedisPublisher(redisClient)
 	consumer := queue.NewRedisConsumer(redisClient)
 
-	provider := delivery.NewWebhookProvider(cfg.Provider.WebhookURL, cfg.Provider.Timeout)
+	var provider delivery.Provider
+	switch strings.ToLower(cfg.Provider.Type) {
+	case "mock":
+		provider = delivery.NewMockProvider(cfg.Provider.MockLatency)
+		logger.Info("using mock provider", "latency", cfg.Provider.MockLatency)
+	default:
+		provider = delivery.NewWebhookProvider(cfg.Provider.WebhookURL, cfg.Provider.Timeout)
+		logger.Info("using webhook provider", "url", cfg.Provider.WebhookURL)
+	}
 	rateLimiter := delivery.NewRedisRateLimiter(redisClient, cfg.Rate.LimitPerSecond)
 	retryStrategy := delivery.NewExponentialBackoff(cfg.Retry.BaseDelay, cfg.Retry.MaxDelay)
 

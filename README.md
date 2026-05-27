@@ -494,6 +494,46 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 | ServiceDown | critical | Prometheus target down > 1min |
 | PersistQueueLag | warning | persist:queue consumer lag > 10000 for 5min |
 
+## Assessment Requirements Coverage
+
+| Requirement | Status | Implementation |
+|---|---|---|
+| **Notification Management API** | | |
+| Create (recipient, channel, content, priority) | ✅ | `POST /api/v1/notifications` — validation, priority, idempotency |
+| Batch creation (up to 1000) | ✅ | `POST /api/v1/notifications/batch` — parallelized Lua create |
+| Query by ID / batch ID | ✅ | `GET /notifications/{id}`, `GET /notifications/batch/{batchId}` |
+| Cancel pending | ✅ | `PATCH /notifications/{id}/cancel` — CAS on pending/queued |
+| List with filtering + pagination | ✅ | Status, channel, date range filters; cursor-based pagination |
+| **Processing Engine** | | |
+| Async queue workers | ✅ | Redis Streams consumer groups, configurable worker pool |
+| Rate limiting (100 msg/s/channel) | ✅ | Sliding window Lua script per channel |
+| Priority queue (high/normal/low) | ✅ | 3 streams + deficit round-robin scheduling |
+| Content validation | ✅ | SMS: 160, Email: 10K, Push: 256 chars; recipient format per channel |
+| Idempotency | ✅ | Atomic Lua check-and-create, 24h TTL |
+| **Delivery & Retry** | | |
+| Webhook.site integration | ✅ | Configurable POST endpoint + mock provider (`PROVIDER_TYPE=mock`) |
+| Exponential backoff + jitter | ✅ | `baseDelay * 2^(attempt-1) + jitter`, max delay cap |
+| Circuit breaker | ✅ | Dual: in-memory + Redis-distributed, backoff requeue |
+| Dead Letter Queue | ✅ | After max retries, non-retryable errors, or max requeue count |
+| **Observability** | | |
+| Real-time metrics | ✅ | Prometheus custom registries on all 4 services |
+| Structured logging + correlation IDs | ✅ | `slog` JSON, `X-Correlation-ID` propagated end-to-end |
+| Health check endpoint | ✅ | `/health` on every service |
+| **Bonus Features** | | |
+| Failure handling | ✅ | 9-layer safety net, persistent requeue, stuck recovery |
+| Scheduled notifications | ✅ | `scheduled_at` field, scheduler polls `schedule:pending` ZSET |
+| Template system | ✅ | `html/template` with sync.Map cache, XSS-safe |
+| WebSocket updates | ✅ | Hub pattern, heartbeat, origin validation, max 1000 connections |
+| Distributed tracing | ✅ | OpenTelemetry + Jaeger, spans across all services |
+| CI/CD | ✅ | Per-service GitHub Actions + SonarCloud |
+| **Deliverables** | | |
+| Source code (clean commits) | ✅ | Conventional commits, meaningful history |
+| README.md | ✅ | Architecture, setup, API examples |
+| Docker Compose (one-command) | ✅ | `docker compose up --build` — all services + observability |
+| Swagger/OpenAPI | ✅ | `/swagger/index.html` |
+| Database migrations (versioned) | ✅ | 3 migrations with up/down, auto-run via leader election |
+| Test suite (single command) | ✅ | `go test ./...` per module, E2E with `-tags=e2e` |
+
 ## Project Structure
 
 ```
