@@ -89,7 +89,7 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 | **Request Body Limit** | 2 MB max body size middleware |
 | **Template Rendering** | `html/template` (not `text/template`) for XSS-safe output |
 | **Provider Response Limit** | `io.LimitReader` caps provider response body at 1 MB — prevents memory exhaustion from malicious/broken providers |
-| **Bounded Re-enqueue** | Semaphore-limited goroutine pool for re-enqueue operations — prevents goroutine leak under sustained rate-limiting or circuit breaker open |
+| **Persistent Re-enqueue** | CB/rate-limit deferred notifications stored in persistent `idx:requeue` ZSET — scheduler polls every 2s, crash-safe, no goroutine leaks |
 | **Requeue Count Limit** | Circuit breaker re-enqueue capped at 50 attempts per notification — moves to DLQ on exceeded limit, preventing infinite re-enqueue loops |
 | **Prometheus Isolation** | Custom registry per service — no global metric conflicts between instances |
 

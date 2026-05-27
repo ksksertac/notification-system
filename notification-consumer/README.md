@@ -39,7 +39,8 @@ Redis Stream -> Worker Pool -> Template Render -> Rate Limiter -> Circuit Breake
                                                     v               v               v
                                                Delivered        Retryable       Permanent
                                                status=delivered  |              status=failed
-                                                         backoff + re-queue     -> DLQ
+                                                         status=retrying        -> DLQ
+                                                         backoff + re-queue
 ```
 
 ## Status Updates — Redis-First
@@ -71,7 +72,7 @@ DLQ entries are stored as Redis Hashes (`dlq:{notification_id}`) containing the 
 Delivery failure (retryable)
     │
     ▼
-IncrementRetry: retry_count++, status=failed, next_retry_at = now + backoff(retry_count)
+IncrementRetry: retry_count++, status=retrying, next_retry_at = now + backoff(retry_count)
     │
     ▼
 ZADD idx:retry <next_retry_at_unixnano> <notification_id>
@@ -81,7 +82,7 @@ ZADD idx:retry <next_retry_at_unixnano> <notification_id>
 ZRANGEBYSCORE idx:retry -inf <now>  →  found!
     │
     ▼
-Transition: failed → queued, ZREM from idx:retry
+Transition: retrying → queued, ZREM from idx:retry
     │
     ▼
 PublishBatch to priority stream  →  consumer picks up again

@@ -61,10 +61,10 @@ Catches: API wrote notification to Redis but optimistic stream publish failed.
 
 ```
 ZRANGEBYSCORE idx:retry -inf <now>
-→ Transitions failed → queued, removes from idx:retry
+→ Transitions retrying → queued, removes from idx:retry
 → Publishes to priority stream for re-delivery
 ```
-Catches: notifications that failed delivery and are waiting for their exponential backoff delay to expire. The consumer writes `next_retry_at` to `idx:retry` sorted set (score = UnixNano), and the scheduler picks them up when the delay has passed.
+Catches: notifications that had a transient delivery failure and are waiting for their exponential backoff delay to expire. The consumer sets status to `retrying` and writes `next_retry_at` to `idx:retry` sorted set (score = UnixNano), and the scheduler picks them up when the delay has passed.
 
 ## Scaling — Race-to-Claim (No Ring Hash)
 
@@ -108,7 +108,7 @@ return 0       -- another pod already took it
 | Crash before Lua script completes | Items remain in `schedule:pending` sorted set | Other pods claim immediately | ~5s |
 | Crash after claim, before Redis Stream publish | Stuck as `queued` in Hash + sorted set | Recovery loop resets to `pending` + re-publishes to stream | ~2min |
 | Crash after Redis Stream publish | All good, consumer processes | N/A | 0 |
-| Consumer delivery failure (retryable) | Status set to `failed`, added to `idx:retry` | Retry recovery loop re-enqueues after backoff delay | 2s–60s |
+| Consumer delivery failure (retryable) | Status set to `retrying`, added to `idx:retry` | Retry recovery loop re-enqueues after backoff delay | 2s–60s |
 | Consumer delivery failure (permanent) | Moved to DLQ | No retry — permanent failure | Immediate |
 
 ## Batch Publishing (Redis Pipeline)

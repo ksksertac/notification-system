@@ -306,7 +306,7 @@ The system is designed with the assumption that any component can fail at any ti
 ### Layer 3: Exponential Backoff Retry via Scheduler
 
 **Trigger:** Provider returns a retryable error and retries remain.
-**Action:** `IncrementRetry` adds the notification to `idx:retry` sorted set with `next_retry_at` as score. The scheduler's `processRetryReady` loop polls every 10s, picks up notifications whose `next_retry_at` has arrived, transitions them from `failed` to `queued`, and publishes them back to the priority stream.
+**Action:** `IncrementRetry` sets the notification status to `retrying` and adds it to the `idx:retry` sorted set with `next_retry_at` as score. The scheduler's `processRetryReady` loop polls every 10s, picks up notifications whose `next_retry_at` has arrived, transitions them from `retrying` to `queued`, and publishes them back to the priority stream.
 **Purpose:** Give the provider time to recover with progressively longer waits.
 
 ### Layer 4: XAUTOCLAIM for Crashed Consumer Messages
@@ -369,7 +369,7 @@ In-memory timers (e.g., `time.AfterFunc`) are lost when a pod restarts. With Red
 
 ### Why re-enqueue instead of sleep on rate limit / circuit breaker open?
 
-Sleeping inside the worker goroutine would block it from processing other messages. With 5 workers per pod, sleeping on one means 20% throughput reduction. Re-enqueueing with a 500ms delay frees the worker immediately to process the next message from the stream. The delayed re-enqueue is handled in a separate goroutine with its own context timeout. To prevent goroutine accumulation under sustained rate limiting or circuit breaker open states, re-enqueue goroutines are bounded by a semaphore channel (`WorkerCount * 2` capacity). When the semaphore is full, re-enqueue attempts are dropped with a warning log — the scheduler's recovery mechanisms will pick up these notifications within seconds.
+Sleeping inside the worker goroutine would block it from processing other messages. With 5 workers per pod, sleeping on one means 20% throughput reduction. Re-enqueueing with a short delay frees the worker immediately to process the next message from the stream. The worker adds the notification to a persistent `idx:requeue` ZSET with a 500ms future timestamp. The scheduler polls this ZSET every 2s and republishes ready notifications to the priority streams. This approach is crash-safe — no notification is lost if a worker pod dies mid-requeue.
 
 ### Why per-channel circuit breaker instead of a global one?
 
