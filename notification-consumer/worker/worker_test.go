@@ -796,6 +796,63 @@ func TestProcessMessage_RetryableFailure(t *testing.T) {
 	})
 }
 
+func TestProcessMessage_RetryableFailureWithRetryAfter(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:         nID,
+		Status:     domain.StatusQueued,
+		Channel:    domain.ChannelEmail,
+		Priority:   domain.PriorityNormal,
+		RetryCount: 0,
+		MaxRetries: 3,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{Retryable: true, RetryAfter: 45 * time.Second}, errors.New("provider rate limited (429)")
+		},
+	}
+
+	defaultDelay := 2 * time.Second
+	retryStrategy := &mockRetryStrategy{
+		shouldRetry: true,
+		nextDelay:   defaultDelay,
+	}
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.repo = repo
+		o.provider = provider
+		o.retry = retryStrategy
+		o.consumer = consumer
+	})
+
+	msg := queue.Message{
+		ID:             "msg-retry-after",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "user@example.com",
+		Content:        "Hello",
+	}
+
+	before := time.Now()
+	wp.processMessage(context.Background(), msg)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.retryIncrements) == 0 {
+		t.Fatal("expected retry to be incremented")
+	}
+	ri := repo.retryIncrements[0]
+	actualDelay := ri.nextRetryAt.Sub(before)
+	if actualDelay < 40*time.Second || actualDelay > 50*time.Second {
+		t.Errorf("expected retry delay ~45s (from Retry-After), got %v", actualDelay)
+	}
+}
+
 func TestProcessMessage_PermanentFailure(t *testing.T) {
 	t.Run("non-retryable failure immediately moves to DLQ", func(t *testing.T) {
 		nID := uuid.New()

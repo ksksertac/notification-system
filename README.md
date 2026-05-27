@@ -270,9 +270,12 @@ POST /api/v1/notifications
  │  Batch HSET to Redis (notification:{id} hashes + index updates)
  │         │
  │         ▼
- │  Redis Pipeline XADD (optimistic)
- │   ├─ success → update idx:status to 'queued' (fast path, ~ms)
- │   └─ fail → stays 'pending' in Redis, scheduler picks up within 30s
+ │  Update status: pending → queued (before publish)
+ │         │
+ │         ▼
+ │  Redis Pipeline XADD (publish to priority stream)
+ │   ├─ success → consumer picks up message with status already 'queued'
+ │   └─ fail → revert to 'pending', scheduler picks up within 30s
  │         │
  │         ▼
  │  XADD persist:queue (notification-dbwriter picks up asynchronously)
@@ -464,8 +467,8 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **Multi-Layer Safety Net**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
 - **Global Rate Limiting**: Redis sliding window (1000 req/s shared across all pods) protects the system from traffic bursts
 - **Deficit Round-Robin Scheduling**: prevents priority starvation with fair weighted scheduling (high:10, normal:5, low:2). Each stream accumulates deficit credits; the highest-deficit stream is served first, ensuring all priorities get throughput proportional to their weight
-- **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts. Re-enqueue capped at 50 attempts — exceeding the limit moves to DLQ instead of infinite loops
-- **Exponential Backoff + Jitter**: prevents thundering herd on provider recovery
+- **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts. CB-open re-enqueue uses exponential backoff (500ms→30s cap) based on requeue count; rate-limit re-enqueue uses fixed 500ms. Re-enqueue capped at 50 attempts — exceeding the limit moves to DLQ instead of infinite loops
+- **Exponential Backoff + Jitter**: prevents thundering herd on provider recovery. Provider 429 `Retry-After` header honored when present
 - **Auto-Migration**: Redis SETNX leader election, no init container needed
 - **Cursor-Based Pagination**: consistent performance regardless of offset depth
 - **API Key Authentication**: timing-safe comparison via `subtle.ConstantTimeCompare`, optional per environment

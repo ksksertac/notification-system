@@ -300,8 +300,8 @@ The system is designed with the assumption that any component can fail at any ti
 ### Layer 2: Circuit Breaker Re-enqueue
 
 **Trigger:** Circuit breaker is open for the target channel.
-**Action:** Re-enqueue after 500ms (status remains `processing` -> re-queued).
-**Purpose:** Stop sending to a failing provider while keeping messages in the pipeline.
+**Action:** Revert status `processing → queued`, re-enqueue with exponential backoff (500ms→1s→2s→...→30s cap based on `requeue_count`). If `requeue_count` exceeds `MaxRequeueCount` (50), notification moves to DLQ.
+**Purpose:** Stop sending to a failing provider while keeping messages in the pipeline. Exponential backoff prevents re-enqueue storms.
 
 ### Layer 3: Exponential Backoff Retry via Scheduler
 

@@ -1097,6 +1097,37 @@ func TestBuffer_DefaultValues(t *testing.T) {
 	}
 }
 
+func TestBuffer_FlushStatusQueuedBeforePublish(t *testing.T) {
+	repo := newMockRepo()
+	var statusAtPublish domain.Status
+	pub := &orderCheckPublisher{
+		onPublish: func(n *domain.Notification) {
+			if stored, ok := repo.notifications[n.ID]; ok {
+				statusAtPublish = stored.Status
+			}
+		},
+	}
+	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
+
+	n := &domain.Notification{
+		ID:        uuid.New(),
+		Recipient: "+905551234567",
+		Channel:   domain.ChannelSMS,
+		Content:   "buffer ordering test",
+		Status:    domain.StatusPending,
+	}
+
+	err := buf.Submit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	buf.Stop()
+
+	if statusAtPublish != domain.StatusQueued {
+		t.Errorf("expected status=queued at publish time, got %s", statusAtPublish)
+	}
+}
+
 func TestCreate_PushChannel(t *testing.T) {
 	repo := newMockRepo()
 	pub := &mockPublisher{}

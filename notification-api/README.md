@@ -69,19 +69,20 @@ The API uses an **optimistic publish** pattern with Redis as the primary store:
 1. Save notification to Redis Hash `notification:{id}` (status: pending)
    + update sorted set indexes                          <- source of truth
 2. Publish to `persist:queue` stream                    <- async PostgreSQL persistence
-3. Try Redis XADD to priority stream (optimistic, best-effort)
-   +-- success -> update status to 'queued' in Redis Hash  <- fast path
-   +-- fail -> stays 'pending', return 200 OK anyway       <- safe path
-4. Client always gets success if Redis write succeeded
+3. Transition status: pending → queued                  <- before stream publish
+4. Try Redis XADD to priority stream
+   +-- success -> consumer picks up with status already 'queued'
+   +-- fail -> revert status to 'pending', return 200 OK <- scheduler recovers
+5. Client always gets success if Redis write succeeded
 ```
 
 **Why this matters:**
 
+- Status is updated to `queued` BEFORE publishing to the stream, so consumers always see the correct status
 - The client never sees a failure for a saved notification
-- Pod crashes between steps cannot cause data loss -- notification stays `pending` in Redis
-- The scheduler picks up any orphaned `pending` notifications within ~30 seconds
+- Pod crashes between steps cannot cause data loss — notification stays `pending` in Redis
+- If stream publish fails, status reverts to `pending` and the scheduler picks it up within ~30 seconds
 - Every write also publishes to the `persist:queue` Redis Stream, which the dbwriter service drains to PostgreSQL for cold storage, reporting, and compliance
-- No intermediate `queued` state exists before stream publish, so there is no dangerous window
 
 This is functionally equivalent to the **Transactional Outbox Pattern** -- Redis `pending` status acts as the outbox, and the scheduler acts as the relay. PostgreSQL is populated asynchronously by dbwriter and serves as the long-term archive.
 
