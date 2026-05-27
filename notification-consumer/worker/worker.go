@@ -249,7 +249,7 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		n.RequeueCount++
 		wp.repo.UpdateRequeueCount(ctx, n.ID, n.RequeueCount)
 		wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued)
-		wp.reEnqueue(ctx, n)
+		wp.reEnqueue(ctx, n, cbBackoffDelay(n.RequeueCount))
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
@@ -264,7 +264,7 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 			wp.metrics.RecordRateLimitHit()
 		}
 		wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued)
-		wp.reEnqueue(ctx, n)
+		wp.reEnqueue(ctx, n, 500*time.Millisecond)
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
@@ -347,6 +347,9 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 	}
 
 	delay := wp.retry.NextDelay(n.RetryCount + 1)
+	if result != nil && result.RetryAfter > 0 {
+		delay = result.RetryAfter
+	}
 	nextRetry := time.Now().Add(delay)
 
 	if err := wp.repo.IncrementRetry(ctx, n.ID, nextRetry, errMsg); err != nil {
@@ -360,11 +363,23 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 	logger.Warn("retry scheduled via persistence", "retry_count", n.RetryCount+1, "next_retry_at", nextRetry, "error", errMsg)
 }
 
-func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification) {
-	requeueAt := time.Now().Add(500 * time.Millisecond)
+func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification, delay time.Duration) {
+	requeueAt := time.Now().Add(delay)
 	if err := wp.repo.AddToRequeueSet(ctx, n.ID, requeueAt); err != nil {
 		wp.logger.Error("failed to add to requeue set", "notification_id", n.ID, "error", err)
 	}
+}
+
+func cbBackoffDelay(requeueCount int) time.Duration {
+	const maxDelay = 30 * time.Second
+	delay := 500 * time.Millisecond
+	for i := 1; i < requeueCount; i++ {
+		delay *= 2
+		if delay >= maxDelay {
+			return maxDelay
+		}
+	}
+	return delay
 }
 
 func (wp *WorkerPool) runClaimer(ctx context.Context) {

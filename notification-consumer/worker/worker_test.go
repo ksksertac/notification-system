@@ -1554,6 +1554,29 @@ func TestProcessMessage_TemplateRendering(t *testing.T) {
 	})
 }
 
+func TestCBBackoffDelay(t *testing.T) {
+	tests := []struct {
+		requeueCount int
+		minDelay     time.Duration
+		maxDelay     time.Duration
+	}{
+		{0, 500 * time.Millisecond, 500 * time.Millisecond},
+		{1, 500 * time.Millisecond, 500 * time.Millisecond},
+		{2, 1 * time.Second, 1 * time.Second},
+		{3, 2 * time.Second, 2 * time.Second},
+		{4, 4 * time.Second, 4 * time.Second},
+		{10, 30 * time.Second, 30 * time.Second},
+		{50, 30 * time.Second, 30 * time.Second},
+	}
+
+	for _, tt := range tests {
+		d := cbBackoffDelay(tt.requeueCount)
+		if d < tt.minDelay || d > tt.maxDelay {
+			t.Errorf("cbBackoffDelay(%d) = %v, want between %v and %v", tt.requeueCount, d, tt.minDelay, tt.maxDelay)
+		}
+	}
+}
+
 func TestReEnqueue(t *testing.T) {
 	repo := newMockRepo()
 	wp := newTestWorkerPool(func(o *testPoolOpts) {
@@ -1568,7 +1591,7 @@ func TestReEnqueue(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	wp.reEnqueue(ctx, n)
+	wp.reEnqueue(ctx, n, 500*time.Millisecond)
 
 	// reEnqueue adds to persistent requeue set
 	repo.mu.Lock()
@@ -1823,7 +1846,7 @@ func TestReEnqueue_AddsToRequeueSet(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	wp.reEnqueue(ctx, n)
+	wp.reEnqueue(ctx, n, 500*time.Millisecond)
 
 	repo.mu.Lock()
 	found := false

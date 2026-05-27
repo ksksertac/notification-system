@@ -116,10 +116,11 @@ func (s *notificationService) Create(ctx context.Context, req domain.CreateNotif
 			return nil, fmt.Errorf("creating notification: %w", err)
 		}
 		if n.ScheduledAt == nil {
-			if err := s.publisher.Publish(ctx, n); err == nil {
-				s.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
-				n.Status = domain.StatusQueued
-			} else {
+			s.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
+			n.Status = domain.StatusQueued
+			if err := s.publisher.Publish(ctx, n); err != nil {
+				s.repo.UpdateStatus(ctx, n.ID, domain.StatusQueued, domain.StatusPending)
+				n.Status = domain.StatusPending
 				s.logger.Warn("redis publish failed, scheduler will retry",
 					"notification_id", n.ID,
 					"error", err,
@@ -193,12 +194,15 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 	}
 
 	if len(immediate) > 0 {
-		if err := s.publisher.PublishBatch(ctx, immediate); err == nil {
+		for _, n := range immediate {
+			s.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
+			n.Status = domain.StatusQueued
+		}
+		if err := s.publisher.PublishBatch(ctx, immediate); err != nil {
 			for _, n := range immediate {
-				s.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
-				n.Status = domain.StatusQueued
+				s.repo.UpdateStatus(ctx, n.ID, domain.StatusQueued, domain.StatusPending)
+				n.Status = domain.StatusPending
 			}
-		} else {
 			s.logger.Warn("redis batch publish failed, scheduler will retry",
 				"count", len(immediate),
 				"error", err,

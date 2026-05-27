@@ -183,7 +183,7 @@ CLOSED --[failures >= threshold]--> OPEN --[openDuration elapsed]--> HALF-OPEN
 | State     | Behavior                                                       |
 |-----------|----------------------------------------------------------------|
 | Closed    | All requests pass through. Failures are counted.               |
-| Open      | All requests are rejected. Messages are re-enqueued with a 500ms delay. |
+| Open      | All requests are rejected. Messages are re-enqueued with exponential backoff (500ms→1s→2s→...→30s cap) based on requeue count. |
 | Half-Open | A limited number of test requests are allowed through. Success transitions to Closed; failure transitions back to Open. |
 
 ### Distributed State via Redis
@@ -199,11 +199,11 @@ In a multi-pod deployment, circuit breaker state must be shared. The system uses
 Messages are not dropped. Instead:
 
 1. The notification's status is reverted (processing -> queued via re-enqueue)
-2. The message is re-published to its priority stream after a 500ms delay
+2. The message is added to the `idx:requeue` ZSET with an exponential backoff delay (500ms, 1s, 2s, 4s, ..., 30s cap) based on `requeue_count`
 3. The stream message is ACK'd to prevent the consumer group from re-delivering it
 4. A Prometheus metric (`circuit_breaker_open_total`) is incremented
 
-This ensures zero message loss while giving the provider breathing room.
+This ensures zero message loss while giving the provider breathing room. The exponential backoff prevents re-enqueue storms — without it, notifications would cycle every ~2.5s indefinitely.
 
 ---
 
@@ -261,7 +261,7 @@ Each worker goroutine follows this pipeline for every message:
          |
          v
 5. Circuit Breaker check
-   |-- OPEN: re-enqueue with 500ms delay, ACK, return
+   |-- OPEN: re-enqueue with exponential backoff (500ms–30s), ACK, return
          |
          v
 6. Rate Limiter check
@@ -369,7 +369,7 @@ In-memory timers (e.g., `time.AfterFunc`) are lost when a pod restarts. With Red
 
 ### Why re-enqueue instead of sleep on rate limit / circuit breaker open?
 
-Sleeping inside the worker goroutine would block it from processing other messages. With 5 workers per pod, sleeping on one means 20% throughput reduction. Re-enqueueing with a short delay frees the worker immediately to process the next message from the stream. The worker adds the notification to a persistent `idx:requeue` ZSET with a 500ms future timestamp. The scheduler polls this ZSET every 2s and republishes ready notifications to the priority streams. This approach is crash-safe — no notification is lost if a worker pod dies mid-requeue.
+Sleeping inside the worker goroutine would block it from processing other messages. With 5 workers per pod, sleeping on one means 20% throughput reduction. Re-enqueueing with a short delay frees the worker immediately to process the next message from the stream. The worker adds the notification to a persistent `idx:requeue` ZSET with a future timestamp. For rate-limited messages, the delay is fixed at 500ms. For circuit breaker open messages, the delay uses exponential backoff (500ms→1s→2s→...→30s cap) based on the notification's `requeue_count`, preventing re-enqueue storms. The scheduler polls this ZSET every 2s and republishes ready notifications to the priority streams. This approach is crash-safe — no notification is lost if a worker pod dies mid-requeue.
 
 ### Why per-channel circuit breaker instead of a global one?
 
@@ -383,13 +383,11 @@ ACK-first is simpler but creates a window where the message is acknowledged but 
 
 Without CAS, two consumers could both read a notification as `queued`, both transition it to `processing`, and both attempt delivery, resulting in duplicate sends. The `updateStatusScript` Lua script atomically checks the current status before updating, ensuring exactly-once processing semantics. If the CAS fails, the worker skips the message (another consumer is handling it).
 
-### Why 500ms for re-enqueue delay?
+### Why different re-enqueue delays for rate limit vs circuit breaker?
 
-This value is a balance between responsiveness and backpressure:
+**Rate limit (fixed 500ms):** Rate limit windows are typically short-lived (sliding window resets quickly). A fixed 500ms delay is responsive enough — the next attempt will likely succeed within seconds.
 
-- **Too low (< 100ms):** Creates a tight retry loop that wastes CPU and Redis operations
-- **Too high (> 5s):** Adds noticeable latency to delivery when the rate limit or circuit breaker clears quickly
-- **500ms:** Allows ~2 retry attempts per second per notification, which is fast enough for user experience while providing meaningful backpressure
+**Circuit breaker open (exponential backoff 500ms–30s):** When the provider is down, notifications should not cycle every ~2.5s indefinitely. Exponential backoff (`500ms * 2^(requeue_count-1)`, capped at 30s) reduces Redis pressure and prevents thundering herd when the circuit closes. Combined with `MaxRequeueCount` (50), this ensures notifications eventually move to DLQ instead of looping forever.
 
 ---
 

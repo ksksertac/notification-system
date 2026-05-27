@@ -2,11 +2,13 @@ package delivery
 
 import (
 	"context"
+	"time"
 )
 
 type SendResult struct {
 	ProviderMsgID string
 	Retryable     bool
+	RetryAfter    time.Duration
 }
 
 type Provider interface {

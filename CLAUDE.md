@@ -31,6 +31,10 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **CB Path Status Reset (Y2)**: Circuit breaker open path now resets status `processing → queued` before re-enqueue, matching the rate-limiter path for consistency.
 - **Persistent Requeue (Y3)**: Replaced in-memory goroutine-based `reEnqueue` with persistent `idx:requeue` ZSET. Scheduler polls this ZSET every 2s and republishes ready notifications to streams. Crash-safe: no notification lost if worker dies mid-requeue.
 - **Migration Readiness (Y5)**: API startup now waits for the dbwriter's migration lock to be released before accepting traffic, preventing queries against unmigrated tables on fresh deployments.
+- **Publish-Before-Queued Race Fix (C2)**: Create flow now transitions `pending→queued` BEFORE publishing to Redis Stream, preventing consumer CAS failures. On publish failure, status reverts to `pending` for scheduler recovery.
+- **CB Re-enqueue Backoff (C1)**: Circuit breaker open path now uses exponential backoff (500ms→1s→2s→...→30s cap) based on `RequeueCount`, preventing re-enqueue storms. Rate-limiter path retains fixed 500ms delay.
+- **Provider 429 Retry-After (C5)**: Webhook provider now parses `Retry-After` header (seconds or HTTP-date format) on 429 responses. Consumer uses provider-specified delay instead of default exponential backoff when available.
+- **OTel Endpoint Fix (C4)**: Fixed double `http://` prefix in docker-compose OTLP endpoint values. `WithEndpoint()` expects `host:port` without scheme.
 
 ## Key Commands Used
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -70,7 +71,8 @@ func (p *webhookProvider) Send(ctx context.Context, recipient string, channel st
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return &SendResult{Retryable: true}, fmt.Errorf("provider rate limited (429): %s", string(respBody))
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return &SendResult{Retryable: true, RetryAfter: retryAfter}, fmt.Errorf("provider rate limited (429): %s", string(respBody))
 	}
 
 	if resp.StatusCode >= 400 {
@@ -86,4 +88,19 @@ func (p *webhookProvider) Send(ctx context.Context, recipient string, channel st
 		ProviderMsgID: webhookResp.MessageID,
 		Retryable:     false,
 	}, nil
+}
+
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := time.Parse(time.RFC1123, header); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }

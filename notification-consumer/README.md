@@ -63,7 +63,7 @@ DLQ entries are stored as Redis Hashes (`dlq:{notification_id}`) containing the 
 | 4 | Consumer crash mid-processing | XPENDING + XCLAIM | Claimer goroutine claims unacknowledged messages after idle threshold | ~15s |
 | 5 | Consumer crash (status stuck as `processing`) | Scheduler recovery loop | Resets to `queued` + re-publishes to stream | ~2min |
 | 6 | Rate limited | Re-enqueue with delay | Status reset to `queued`, re-published after 500ms | 500ms |
-| 7 | Circuit breaker open | Fast fail | Returns immediately without calling provider, consumer retries on next cycle | Varies |
+| 7 | Circuit breaker open | Re-enqueue with backoff | Status reset to `queued`, exponential backoff delay (500ms→1s→2s→...→30s cap) based on requeue count | 500ms–30s |
 | 8 | Provider temporarily down (all channels) | Circuit breaker per channel | Opens after 5 failures, half-open probe after 30s, closes on success | 30s |
 
 ### Retry Flow (Exponential Backoff)
@@ -89,6 +89,8 @@ PublishBatch to priority stream  →  consumer picks up again
 ```
 
 Backoff delays: 2s → 4s → 8s → 16s → 32s → 60s (capped). With jitter to prevent thundering herd.
+
+If the provider returns a `429` response with a `Retry-After` header (seconds or HTTP-date), the consumer honors the provider-specified delay instead of the default exponential backoff.
 
 ## Metrics (Prometheus on :9090)
 

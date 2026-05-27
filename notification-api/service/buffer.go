@@ -142,12 +142,15 @@ func (wb *WriteBuffer) flush(batch []*writeRequest) {
 	}
 
 	if len(immediate) > 0 {
-		if pubErr := wb.publisher.PublishBatch(ctx, immediate); pubErr == nil {
+		for _, n := range immediate {
+			wb.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
+			n.Status = domain.StatusQueued
+		}
+		if pubErr := wb.publisher.PublishBatch(ctx, immediate); pubErr != nil {
 			for _, n := range immediate {
-				wb.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
-				n.Status = domain.StatusQueued
+				wb.repo.UpdateStatus(ctx, n.ID, domain.StatusQueued, domain.StatusPending)
+				n.Status = domain.StatusPending
 			}
-		} else {
 			wb.logger.Warn("write buffer publish failed, scheduler will retry",
 				"count", len(immediate),
 				"error", pubErr,

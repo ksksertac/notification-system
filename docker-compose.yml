@@ -60,7 +60,7 @@ services:
     environment:
       DB_HOST: pgbouncer
       API_KEY: changeme-notification-secret
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -82,7 +82,7 @@ services:
     env_file:
       - notification-consumer/.env.example
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       redis:
         condition: service_healthy
@@ -106,7 +106,7 @@ services:
     env_file:
       - notification-scheduler/.env.example
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       redis:
         condition: service_healthy
@@ -131,7 +131,7 @@ services:
       - notification-dbwriter/.env.example
     environment:
       DB_HOST: pgbouncer
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       pgbouncer:
         condition: service_healthy

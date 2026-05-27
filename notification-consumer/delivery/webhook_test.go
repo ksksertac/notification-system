@@ -103,6 +103,65 @@ func TestWebhookSend_RateLimit429(t *testing.T) {
 	}
 }
 
+func TestWebhookSend_429WithRetryAfterSeconds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte("rate limited"))
+	}))
+	defer server.Close()
+
+	provider := NewWebhookProvider(server.URL, 5*time.Second)
+	result, err := provider.Send(context.Background(), "user@example.com", "sms", "Hello")
+	if err == nil {
+		t.Fatal("expected error for 429 response")
+	}
+	if result.RetryAfter != 30*time.Second {
+		t.Errorf("expected RetryAfter=30s, got %v", result.RetryAfter)
+	}
+}
+
+func TestWebhookSend_429WithRetryAfterHTTPDate(t *testing.T) {
+	futureTime := time.Now().Add(60 * time.Second)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", futureTime.UTC().Format(time.RFC1123))
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte("rate limited"))
+	}))
+	defer server.Close()
+
+	provider := NewWebhookProvider(server.URL, 5*time.Second)
+	result, err := provider.Send(context.Background(), "user@example.com", "sms", "Hello")
+	if err == nil {
+		t.Fatal("expected error for 429 response")
+	}
+	if result.RetryAfter < 50*time.Second || result.RetryAfter > 70*time.Second {
+		t.Errorf("expected RetryAfter ~60s, got %v", result.RetryAfter)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty", "", 0},
+		{"seconds", "120", 120 * time.Second},
+		{"zero", "0", 0},
+		{"negative", "-5", 0},
+		{"invalid", "abc", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRetryAfter(tt.header)
+			if got != tt.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWebhookSend_ClientError400(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

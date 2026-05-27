@@ -1157,3 +1157,53 @@ func TestCancel_FromQueuedStatus(t *testing.T) {
 		t.Errorf("expected cancelled, got %s", repo.notifications[id].Status)
 	}
 }
+
+func TestCreate_StatusQueuedBeforePublish(t *testing.T) {
+	repo := newMockRepo()
+	var statusAtPublish domain.Status
+	pub := &orderCheckPublisher{
+		onPublish: func(n *domain.Notification) {
+			if stored, ok := repo.notifications[n.ID]; ok {
+				statusAtPublish = stored.Status
+			}
+		},
+	}
+	svc := NewNotificationService(repo, pub, NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil), 5, nil)
+
+	req := domain.CreateNotificationRequest{
+		Recipient: "+905551234567",
+		Channel:   "sms",
+		Content:   "Test",
+	}
+
+	n, err := svc.Create(context.Background(), req, "order-check-key")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if statusAtPublish != domain.StatusQueued {
+		t.Errorf("expected status=queued at publish time, got %s", statusAtPublish)
+	}
+	if n.Status != domain.StatusQueued {
+		t.Errorf("expected final status=queued, got %s", n.Status)
+	}
+}
+
+type orderCheckPublisher struct {
+	onPublish func(n *domain.Notification)
+}
+
+func (p *orderCheckPublisher) Publish(ctx context.Context, n *domain.Notification) error {
+	if p.onPublish != nil {
+		p.onPublish(n)
+	}
+	return nil
+}
+
+func (p *orderCheckPublisher) PublishBatch(ctx context.Context, notifications []*domain.Notification) error {
+	for _, n := range notifications {
+		if p.onPublish != nil {
+			p.onPublish(n)
+		}
+	}
+	return nil
+}
