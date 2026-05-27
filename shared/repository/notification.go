@@ -28,4 +28,5 @@ type NotificationRepository interface {
 	GetRetryReady(ctx context.Context, limit int) ([]*domain.Notification, error)
 	RecoverStuckProcessing(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error)
 	RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error)
+	UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error
 }

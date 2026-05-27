@@ -1,45 +1,47 @@
 basePath: /api/v1
 definitions:
-  github_com_sertacyildirim_notification-system_shared_domain.APIError:
+  domain.APIError:
     properties:
       code:
         type: string
       message:
         type: string
     type: object
-  github_com_sertacyildirim_notification-system_shared_domain.APIResponse:
+  domain.APIResponse:
     properties:
       correlation_id:
         type: string
       data: {}
       error:
-        $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+        $ref: '#/definitions/domain.APIError'
       success:
         type: boolean
     type: object
-  github_com_sertacyildirim_notification-system_shared_domain.BatchCreateRequest:
+  domain.BatchCreateRequest:
     properties:
       notifications:
         items:
-          $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.CreateNotificationRequest'
+          $ref: '#/definitions/domain.CreateNotificationRequest'
         type: array
     type: object
-  github_com_sertacyildirim_notification-system_shared_domain.BatchCreateResponse:
+  domain.BatchCreateResponse:
     properties:
       batch_id:
         type: string
       notifications:
         items:
-          $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse'
+          $ref: '#/definitions/domain.NotificationResponse'
         type: array
       total:
         type: integer
     type: object
-  github_com_sertacyildirim_notification-system_shared_domain.CreateNotificationRequest:
+  domain.CreateNotificationRequest:
     properties:
       channel:
         type: string
       content:
+        type: string
+      idempotency_key:
         type: string
       metadata:
         additionalProperties: {}
@@ -51,18 +53,18 @@ definitions:
       scheduled_at:
         type: string
     type: object
-  github_com_sertacyildirim_notification-system_shared_domain.ListNotificationsResponse:
+  domain.ListNotificationsResponse:
     properties:
       next_cursor:
         type: string
       notifications:
         items:
-          $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse'
+          $ref: '#/definitions/domain.NotificationResponse'
         type: array
       total:
         type: integer
     type: object
-  github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse:
+  domain.NotificationResponse:
     properties:
       batch_id:
         type: string
@@ -105,14 +107,16 @@ definitions:
 host: localhost:8080
 info:
   contact: {}
-  description: Event-driven notification system supporting SMS, Email, and Push channels
-    with priority queuing, retry logic, and real-time status tracking.
+  description: Event-driven notification system with Redis-first hot/cold tiered storage.
+    Supports SMS, Email, and Push channels with priority queuing, retry logic, and
+    real-time status tracking.
   title: Notification System API
   version: "1.0"
 paths:
   /health:
     get:
-      description: Check health status of all system components (Postgres, Redis)
+      description: Check health status of Redis (primary data store) and optionally
+        Postgres
       produces:
       - application/json
       responses:
@@ -163,37 +167,37 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 data:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.ListNotificationsResponse'
+                  $ref: '#/definitions/domain.ListNotificationsResponse'
               type: object
         "400":
           description: Bad Request
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "429":
           description: Too Many Requests
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "500":
           description: Internal Server Error
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
       security:
       - ApiKeyAuth: []
@@ -214,7 +218,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.CreateNotificationRequest'
+          $ref: '#/definitions/domain.CreateNotificationRequest'
       produces:
       - application/json
       responses:
@@ -222,37 +226,37 @@ paths:
           description: Created
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 data:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse'
+                  $ref: '#/definitions/domain.NotificationResponse'
               type: object
         "400":
           description: Bad Request
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "429":
           description: Too Many Requests
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "500":
           description: Internal Server Error
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
       security:
       - ApiKeyAuth: []
@@ -275,46 +279,46 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 data:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse'
+                  $ref: '#/definitions/domain.NotificationResponse'
               type: object
         "400":
           description: Bad Request
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "404":
           description: Not Found
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "429":
           description: Too Many Requests
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "500":
           description: Internal Server Error
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
       security:
       - ApiKeyAuth: []
@@ -336,51 +340,51 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            $ref: '#/definitions/domain.APIResponse'
         "400":
           description: Bad Request
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "404":
           description: Not Found
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "409":
           description: Conflict
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "429":
           description: Too Many Requests
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "500":
           description: Internal Server Error
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
       security:
       - ApiKeyAuth: []
@@ -398,7 +402,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.BatchCreateRequest'
+          $ref: '#/definitions/domain.BatchCreateRequest'
       produces:
       - application/json
       responses:
@@ -406,37 +410,37 @@ paths:
           description: Created
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 data:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.BatchCreateResponse'
+                  $ref: '#/definitions/domain.BatchCreateResponse'
               type: object
         "400":
           description: Bad Request
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "429":
           description: Too Many Requests
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "500":
           description: Internal Server Error
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
       security:
       - ApiKeyAuth: []
@@ -459,45 +463,62 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 data:
                   items:
-                    $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse'
+                    $ref: '#/definitions/domain.NotificationResponse'
                   type: array
               type: object
         "400":
           description: Bad Request
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "429":
           description: Too Many Requests
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
         "500":
           description: Internal Server Error
           schema:
             allOf:
-            - $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse'
+            - $ref: '#/definitions/domain.APIResponse'
             - properties:
                 error:
-                  $ref: '#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError'
+                  $ref: '#/definitions/domain.APIError'
               type: object
       security:
       - ApiKeyAuth: []
       summary: Get notifications by batch ID
       tags:
       - notifications
+  /ws:
+    get:
+      description: 'Upgrades to WebSocket connection. Server pushes JSON messages:
+        {"notification_id":"uuid","status":"delivered|failed|processing"}. Max 1000
+        concurrent connections. Ping/pong heartbeat every 30s.'
+      responses:
+        "101":
+          description: Switching Protocols
+          schema:
+            type: string
+        "503":
+          description: too many connections
+          schema:
+            type: string
+      summary: WebSocket for real-time status updates
+      tags:
+      - websocket
 securityDefinitions:
   ApiKeyAuth:
     in: header

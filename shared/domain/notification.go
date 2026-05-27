@@ -137,6 +137,7 @@ type Notification struct {
 	ProviderMsgID  *string    `db:"provider_msg_id" json:"provider_msg_id,omitempty"`
 	RetryCount     int        `db:"retry_count" json:"retry_count"`
 	MaxRetries     int        `db:"max_retries" json:"max_retries"`
+	RequeueCount   int        `db:"requeue_count" json:"requeue_count"`
 	NextRetryAt    *time.Time `db:"next_retry_at" json:"next_retry_at,omitempty"`
 	ScheduledAt    *time.Time `db:"scheduled_at" json:"scheduled_at,omitempty"`
 	Metadata       []byte     `db:"metadata" json:"metadata,omitempty"`
@@ -144,6 +145,8 @@ type Notification struct {
 	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt      time.Time  `db:"updated_at" json:"updated_at"`
 }
+
+const MaxRequeueCount = 50
 
 type DeadLetterEntry struct {
 	ID             uuid.UUID  `db:"id" json:"id"`

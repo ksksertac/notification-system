@@ -96,6 +96,9 @@ func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration tim
 	}
 	return nil, nil
 }
+func (m *mockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
 

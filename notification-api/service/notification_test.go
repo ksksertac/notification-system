@@ -144,6 +144,9 @@ func (m *mockRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold ti
 func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}
 
 type mockPublisher struct {
 	published      []*domain.Notification

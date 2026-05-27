@@ -474,3 +474,11 @@ func (r *postgresNotificationRepo) RecoverOrphanedPending(ctx context.Context, s
 
 	return orphaned, nil
 }
+
+func (r *postgresNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE notifications SET requeue_count = $1, updated_at = $2 WHERE id = $3`,
+		count, time.Now().UTC(), id,
+	)
+	return err
+}

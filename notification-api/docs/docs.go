@@ -17,7 +17,7 @@ const docTemplate = `{
     "paths": {
         "/health": {
             "get": {
-                "description": "Check health status of all system components (Postgres, Redis)",
+                "description": "Check health status of Redis (primary data store) and optionally Postgres",
                 "produces": [
                     "application/json"
                 ],
@@ -43,6 +43,11 @@ const docTemplate = `{
         },
         "/notifications": {
             "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "List notifications with cursor-based pagination and optional filters",
                 "produces": [
                     "application/json"
@@ -95,13 +100,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.ListNotificationsResponse"
+                                            "$ref": "#/definitions/domain.ListNotificationsResponse"
                                         }
                                     }
                                 }
@@ -113,13 +118,31 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/domain.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "error": {
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -131,13 +154,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -147,6 +170,11 @@ const docTemplate = `{
                 }
             },
             "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Create a new notification for delivery via SMS, Email, or Push",
                 "consumes": [
                     "application/json"
@@ -171,7 +199,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.CreateNotificationRequest"
+                            "$ref": "#/definitions/domain.CreateNotificationRequest"
                         }
                     }
                 ],
@@ -181,13 +209,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse"
+                                            "$ref": "#/definitions/domain.NotificationResponse"
                                         }
                                     }
                                 }
@@ -199,13 +227,31 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/domain.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "error": {
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -217,13 +263,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -235,6 +281,11 @@ const docTemplate = `{
         },
         "/notifications/batch": {
             "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Create up to 1000 notifications in a single request",
                 "consumes": [
                     "application/json"
@@ -253,7 +304,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.BatchCreateRequest"
+                            "$ref": "#/definitions/domain.BatchCreateRequest"
                         }
                     }
                 ],
@@ -263,13 +314,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.BatchCreateResponse"
+                                            "$ref": "#/definitions/domain.BatchCreateResponse"
                                         }
                                     }
                                 }
@@ -281,13 +332,31 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/domain.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "error": {
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -299,13 +368,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -317,6 +386,11 @@ const docTemplate = `{
         },
         "/notifications/batch/{batchId}": {
             "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Retrieve all notifications belonging to a batch",
                 "produces": [
                     "application/json"
@@ -340,7 +414,7 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
@@ -348,7 +422,7 @@ const docTemplate = `{
                                         "data": {
                                             "type": "array",
                                             "items": {
-                                                "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse"
+                                                "$ref": "#/definitions/domain.NotificationResponse"
                                             }
                                         }
                                     }
@@ -361,13 +435,31 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/domain.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "error": {
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -379,13 +471,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -397,6 +489,11 @@ const docTemplate = `{
         },
         "/notifications/{id}": {
             "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Retrieve a single notification by its UUID",
                 "produces": [
                     "application/json"
@@ -420,13 +517,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse"
+                                            "$ref": "#/definitions/domain.NotificationResponse"
                                         }
                                     }
                                 }
@@ -438,13 +535,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -456,13 +553,31 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/domain.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "error": {
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -474,13 +589,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -492,6 +607,11 @@ const docTemplate = `{
         },
         "/notifications/{id}/cancel": {
             "patch": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Cancel a pending or queued notification before delivery",
                 "produces": [
                     "application/json"
@@ -513,7 +633,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                            "$ref": "#/definitions/domain.APIResponse"
                         }
                     },
                     "400": {
@@ -521,13 +641,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -539,13 +659,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -557,13 +677,31 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/domain.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "error": {
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -575,13 +713,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIResponse"
+                                    "$ref": "#/definitions/domain.APIResponse"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "error": {
-                                            "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                                            "$ref": "#/definitions/domain.APIError"
                                         }
                                     }
                                 }
@@ -590,10 +728,33 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/ws": {
+            "get": {
+                "description": "Upgrades to WebSocket connection. Server pushes JSON messages: {\"notification_id\":\"uuid\",\"status\":\"delivered|failed|processing\"}. Max 1000 concurrent connections. Ping/pong heartbeat every 30s.",
+                "tags": [
+                    "websocket"
+                ],
+                "summary": "WebSocket for real-time status updates",
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "503": {
+                        "description": "too many connections",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
-        "github_com_sertacyildirim_notification-system_shared_domain.APIError": {
+        "domain.APIError": {
             "type": "object",
             "properties": {
                 "code": {
@@ -604,7 +765,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_sertacyildirim_notification-system_shared_domain.APIResponse": {
+        "domain.APIResponse": {
             "type": "object",
             "properties": {
                 "correlation_id": {
@@ -612,25 +773,25 @@ const docTemplate = `{
                 },
                 "data": {},
                 "error": {
-                    "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.APIError"
+                    "$ref": "#/definitions/domain.APIError"
                 },
                 "success": {
                     "type": "boolean"
                 }
             }
         },
-        "github_com_sertacyildirim_notification-system_shared_domain.BatchCreateRequest": {
+        "domain.BatchCreateRequest": {
             "type": "object",
             "properties": {
                 "notifications": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.CreateNotificationRequest"
+                        "$ref": "#/definitions/domain.CreateNotificationRequest"
                     }
                 }
             }
         },
-        "github_com_sertacyildirim_notification-system_shared_domain.BatchCreateResponse": {
+        "domain.BatchCreateResponse": {
             "type": "object",
             "properties": {
                 "batch_id": {
@@ -639,7 +800,7 @@ const docTemplate = `{
                 "notifications": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse"
+                        "$ref": "#/definitions/domain.NotificationResponse"
                     }
                 },
                 "total": {
@@ -647,13 +808,16 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_sertacyildirim_notification-system_shared_domain.CreateNotificationRequest": {
+        "domain.CreateNotificationRequest": {
             "type": "object",
             "properties": {
                 "channel": {
                     "type": "string"
                 },
                 "content": {
+                    "type": "string"
+                },
+                "idempotency_key": {
                     "type": "string"
                 },
                 "metadata": {
@@ -671,7 +835,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_sertacyildirim_notification-system_shared_domain.ListNotificationsResponse": {
+        "domain.ListNotificationsResponse": {
             "type": "object",
             "properties": {
                 "next_cursor": {
@@ -680,7 +844,7 @@ const docTemplate = `{
                 "notifications": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse"
+                        "$ref": "#/definitions/domain.NotificationResponse"
                     }
                 },
                 "total": {
@@ -688,7 +852,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_sertacyildirim_notification-system_shared_domain.NotificationResponse": {
+        "domain.NotificationResponse": {
             "type": "object",
             "properties": {
                 "batch_id": {
@@ -749,6 +913,13 @@ const docTemplate = `{
                 }
             }
         }
+    },
+    "securityDefinitions": {
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "name": "X-API-Key",
+            "in": "header"
+        }
     }
 }`
 
@@ -759,7 +930,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/api/v1",
 	Schemes:          []string{},
 	Title:            "Notification System API",
-	Description:      "Event-driven notification system supporting SMS, Email, and Push channels with priority queuing, retry logic, and real-time status tracking.",
+	Description:      "Event-driven notification system with Redis-first hot/cold tiered storage. Supports SMS, Email, and Push channels with priority queuing, retry logic, and real-time status tracking.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

@@ -88,6 +88,7 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 | **Template Rendering** | `html/template` (not `text/template`) for XSS-safe output |
 | **Provider Response Limit** | `io.LimitReader` caps provider response body at 1 MB — prevents memory exhaustion from malicious/broken providers |
 | **Bounded Re-enqueue** | Semaphore-limited goroutine pool for re-enqueue operations — prevents goroutine leak under sustained rate-limiting or circuit breaker open |
+| **Requeue Count Limit** | Circuit breaker re-enqueue capped at 50 attempts per notification — moves to DLQ on exceeded limit, preventing infinite re-enqueue loops |
 | **Prometheus Isolation** | Custom registry per service — no global metric conflicts between instances |
 
 ## Services
@@ -459,8 +460,8 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **Redis Lua Scripts**: server-side atomic operations for CAS (compare-and-swap), scheduled claim, recovery, rate limiting — same guarantee as `SELECT FOR UPDATE` at Redis speed
 - **Multi-Layer Safety Net**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
 - **Global Rate Limiting**: Redis sliding window (1000 req/s shared across all pods) protects the system from traffic bursts
-- **Weighted Polling**: prevents priority starvation (high:10, normal:5, low:2)
-- **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts
+- **Deficit Round-Robin Scheduling**: prevents priority starvation with fair weighted scheduling (high:10, normal:5, low:2). Each stream accumulates deficit credits; the highest-deficit stream is served first, ensuring all priorities get throughput proportional to their weight
+- **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts. Re-enqueue capped at 50 attempts — exceeding the limit moves to DLQ instead of infinite loops
 - **Exponential Backoff + Jitter**: prevents thundering herd on provider recovery
 - **Auto-Migration**: Redis SETNX leader election, no init container needed
 - **Cursor-Based Pagination**: consistent performance regardless of offset depth

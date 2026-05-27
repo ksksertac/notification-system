@@ -24,6 +24,9 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **Code Review Fixes**: Atomic idempotency (Lua script), bounded re-enqueue goroutines, provider response body limit (1MB), Prometheus full scrape coverage (all 4 services), API key enabled by default.
 - **Distributed Tracing**: Full OpenTelemetry SDK integration (OTLP/HTTP → Jaeger), otelhttp middleware on API, correlation ID propagation via `shared/tracing` package.
 - **Critical Bug Fixes (Post-Review)**: Recovery scripts now compare `updated_at` (not `created_at` score) to avoid recovering recently re-queued notifications. `MoveToDLQ` and `GetRetryReady` converted from Redis pipeline to atomic Lua scripts preventing race conditions. `CreateBatch` parallelized with 50 concurrent goroutines (500ms → ~20ms). Worker now checks `UpdateStatusWithDetails` return values and reverts status on semaphore-full re-enqueue drops. Batch create supports per-notification idempotency keys. List temporary intersection keys now have EXPIRE as safety net.
+- **Priority Queue Fairness**: Replaced sequential stream polling with deficit round-robin scheduling to prevent low-priority starvation. Each priority stream accumulates deficit credits proportional to its weight; the stream with highest deficit is served first, ensuring all priorities get throughput.
+- **Circuit Breaker Requeue Safety**: Added `RequeueCount` field and `MaxRequeueCount` (50) limit. Notifications re-enqueued due to circuit breaker open state now track requeue attempts; exceeding the limit moves the notification to DLQ instead of infinite re-enqueue loops.
+- **WebSocket Swagger Docs**: Added Swagger annotations to `/ws` endpoint for OpenAPI spec completeness.
 
 ## Key Commands Used
 
@@ -59,6 +62,8 @@ claude "move migrator from API to dbwriter"
 - Stream messages ACK'd only after all side effects complete
 - Correlation ID propagated across services via `shared/tracing` context key and Redis Stream messages
 - Re-enqueue goroutines bounded by semaphore channel to prevent leak under backpressure
+- Deficit round-robin scheduling for priority queues (prevents low-priority starvation)
+- Circuit breaker re-enqueue capped at `MaxRequeueCount` (50) to prevent infinite loops
 - Provider response bodies capped at 1 MB (`io.LimitReader`)
 - Docker multi-stage builds, GitHub Actions CI per service
 - Jaeger for distributed tracing (OTLP endpoint on 4317/4318, UI on 16686)

@@ -52,6 +52,9 @@ type WorkerPool struct {
 	logger      *slog.Logger
 	wg          sync.WaitGroup
 	requeueSem  chan struct{}
+
+	deficitMu sync.Mutex
+	deficit   [3]int
 }
 
 func NewWorkerPool(
@@ -131,7 +134,7 @@ func (wp *WorkerPool) runWorker(ctx context.Context, id int) {
 func (wp *WorkerPool) pollStreams(ctx context.Context, consumerName string) bool {
 	processed := false
 
-	streams := []struct {
+	streams := [3]struct {
 		name   string
 		weight int
 	}{
@@ -140,17 +143,55 @@ func (wp *WorkerPool) pollStreams(ctx context.Context, consumerName string) bool
 		{queue.StreamLow, wp.cfg.WeightLow},
 	}
 
-	for _, s := range streams {
-		msgs, err := wp.consumer.Read(ctx, s.name, wp.cfg.ConsumerGroup, consumerName, int64(s.weight))
+	wp.deficitMu.Lock()
+	for i := range streams {
+		wp.deficit[i] += streams[i].weight
+	}
+	wp.deficitMu.Unlock()
+
+	for {
+		maxIdx := -1
+		maxDeficit := 0
+		wp.deficitMu.Lock()
+		for i := range streams {
+			if wp.deficit[i] > maxDeficit {
+				maxDeficit = wp.deficit[i]
+				maxIdx = i
+			}
+		}
+		wp.deficitMu.Unlock()
+
+		if maxIdx < 0 || maxDeficit <= 0 {
+			break
+		}
+
+		s := streams[maxIdx]
+		msgs, err := wp.consumer.Read(ctx, s.name, wp.cfg.ConsumerGroup, consumerName, int64(maxDeficit))
 		if err != nil {
 			wp.logger.Error("failed to read stream", "stream", s.name, "error", err)
+			wp.deficitMu.Lock()
+			wp.deficit[maxIdx] = 0
+			wp.deficitMu.Unlock()
 			continue
 		}
+
+		wp.deficitMu.Lock()
+		if len(msgs) == 0 {
+			wp.deficit[maxIdx] = 0
+		} else {
+			wp.deficit[maxIdx] -= len(msgs)
+		}
+		wp.deficitMu.Unlock()
 
 		for _, msg := range msgs {
 			wp.processMessage(ctx, msg)
 			processed = true
 		}
+
+		if len(msgs) == 0 {
+			continue
+		}
+		break
 	}
 
 	return processed
@@ -192,10 +233,23 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 
 	cb := wp.cbRegistry.Get(string(msg.Channel))
 	if !cb.Allow() {
-		logger.Warn("circuit breaker open, re-enqueuing")
+		logger.Warn("circuit breaker open, re-enqueuing", "requeue_count", n.RequeueCount)
 		if wp.metrics != nil {
 			wp.metrics.RecordCircuitBreakerOpen()
 		}
+		if n.RequeueCount >= domain.MaxRequeueCount {
+			logger.Error("max requeue count exceeded, moving to DLQ", "requeue_count", n.RequeueCount)
+			if err := wp.repo.MoveToDLQ(ctx, n, "max requeue count exceeded (circuit breaker)"); err != nil {
+				logger.Error("failed to move notification to DLQ", "error", err)
+			}
+			if wp.broadcaster != nil {
+				wp.broadcaster.Broadcast(n.ID, domain.StatusFailed)
+			}
+			wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
+			return
+		}
+		n.RequeueCount++
+		wp.repo.UpdateRequeueCount(ctx, n.ID, n.RequeueCount)
 		wp.reEnqueue(ctx, n)
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return

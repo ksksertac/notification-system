@@ -144,6 +144,9 @@ func (m *mockNotificationRepo) RecoverOrphanedPending(ctx context.Context, stale
 	m.recoverOrphanedPendingCalled = true
 	return m.recoverOrphanedPendingResult, m.recoverOrphanedPendingErr
 }
+func (m *mockNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}
 
 func newTestNotification() *domain.Notification {
 	return &domain.Notification{

@@ -110,3 +110,7 @@ func (t *TieredNotificationRepo) RecoverStuckProcessing(ctx context.Context, stu
 func (t *TieredNotificationRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
 	return t.hot.RecoverOrphanedPending(ctx, staleDuration, limit)
 }
+
+func (t *TieredNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return t.hot.UpdateRequeueCount(ctx, id, count)
+}

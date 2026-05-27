@@ -74,6 +74,13 @@ func (h *Hub) checkOrigin(r *http.Request) bool {
 	return false
 }
 
+// HandleWS upgrades the HTTP connection to a WebSocket for real-time notification status updates.
+// @Summary WebSocket for real-time status updates
+// @Description Upgrades to WebSocket connection. Server pushes JSON messages: {"notification_id":"uuid","status":"delivered|failed|processing"}. Max 1000 concurrent connections. Ping/pong heartbeat every 30s.
+// @Tags websocket
+// @Success 101 {string} string "Switching Protocols"
+// @Failure 503 {string} string "too many connections"
+// @Router /ws [get]
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Check connection limit
 	h.mu.RLock()

@@ -54,8 +54,9 @@ func notificationToMap(n *domain.Notification) map[string]interface{} {
 		"priority":    n.Priority.String(),
 		"status":      string(n.Status),
 		"retry_count": strconv.Itoa(n.RetryCount),
-		"max_retries": strconv.Itoa(n.MaxRetries),
-		"created_at":  n.CreatedAt.Format(time.RFC3339Nano),
+		"max_retries":   strconv.Itoa(n.MaxRetries),
+		"requeue_count": strconv.Itoa(n.RequeueCount),
+		"created_at":    n.CreatedAt.Format(time.RFC3339Nano),
 		"updated_at":  n.UpdatedAt.Format(time.RFC3339Nano),
 	}
 	if n.IdempotencyKey != nil {
@@ -100,6 +101,10 @@ func mapToNotification(vals map[string]string) (*domain.Notification, error) {
 	if mrErr != nil {
 		slog.Warn("mapToNotification: failed to parse max_retries, defaulting to 0", "id", vals["id"], "value", vals["max_retries"], "error", mrErr)
 	}
+	requeueCount, rqErr := strconv.Atoi(vals["requeue_count"])
+	if rqErr != nil && vals["requeue_count"] != "" {
+		slog.Warn("mapToNotification: failed to parse requeue_count, defaulting to 0", "id", vals["id"], "value", vals["requeue_count"], "error", rqErr)
+	}
 
 	createdAt, caErr := time.Parse(time.RFC3339Nano, vals["created_at"])
 	if caErr != nil {
@@ -117,10 +122,11 @@ func mapToNotification(vals map[string]string) (*domain.Notification, error) {
 		Content:    vals["content"],
 		Priority:   priority,
 		Status:     domain.Status(vals["status"]),
-		RetryCount: retryCount,
-		MaxRetries: maxRetries,
-		CreatedAt:  createdAt,
-		UpdatedAt:  updatedAt,
+		RetryCount:   retryCount,
+		MaxRetries:   maxRetries,
+		RequeueCount: requeueCount,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
 	}
 
 	if v, ok := vals["idempotency_key"]; ok && v != "" {
@@ -1314,6 +1320,14 @@ func (r *redisNotificationRepo) publishPersistEvent(ctx context.Context, pipe re
 			"event": string(data),
 		},
 	})
+}
+
+func (r *redisNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	key := notificationKey(id)
+	return r.client.HSet(ctx, key,
+		"requeue_count", strconv.Itoa(count),
+		"updated_at", time.Now().UTC().Format(time.RFC3339Nano),
+	).Err()
 }
 
 func ParsePersistEvent(values map[string]interface{}) (*PersistEvent, error) {

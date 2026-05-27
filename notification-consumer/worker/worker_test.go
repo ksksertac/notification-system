@@ -221,6 +221,9 @@ func (m *mockRepo) RecoverStuckProcessing(ctx context.Context, stuckThreshold ti
 func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
 
@@ -1728,6 +1731,9 @@ func (m *errorMockRepo) RecoverStuckProcessing(ctx context.Context, stuckThresho
 func (m *errorMockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *errorMockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}
 
 var _ repository.NotificationRepository = (*errorMockRepo)(nil)
 
@@ -1961,4 +1967,201 @@ func TestProcessMessage_UpdateStatusWithDetailsCASFailure(t *testing.T) {
 		t.Error("expected message to be acknowledged even when CAS fails")
 	}
 	consumer.mu.Unlock()
+}
+
+func TestPollStreams_DeficitRoundRobin_NoStarvation(t *testing.T) {
+	t.Run("low priority gets served when high priority is empty", func(t *testing.T) {
+		nIDLow := uuid.New()
+		repo := newMockRepo()
+		repo.notifications[nIDLow] = &domain.Notification{
+			ID:       nIDLow,
+			Status:   domain.StatusQueued,
+			Channel:  domain.ChannelSMS,
+			Priority: domain.PriorityLow,
+		}
+
+		consumer := &mockConsumer{
+			readCalls: []readCall{
+				{stream: queue.StreamHigh, count: 10, msgs: nil},
+				{stream: queue.StreamNormal, count: 5, msgs: nil},
+				{stream: queue.StreamLow, count: 2, msgs: []queue.Message{
+					{
+						ID:             "low-msg-1",
+						StreamName:     queue.StreamLow,
+						NotificationID: nIDLow,
+						Channel:        domain.ChannelSMS,
+						Recipient:      "+1234567890",
+						Content:        "Low priority",
+						Priority:       domain.PriorityLow,
+					},
+				}},
+			},
+		}
+
+		wp := newTestWorkerPool(func(o *testPoolOpts) {
+			o.consumer = consumer
+			o.repo = repo
+		})
+
+		ctx := context.Background()
+		processed := wp.pollStreams(ctx, "test-consumer")
+
+		if !processed {
+			t.Error("expected low priority message to be processed when higher priorities are empty")
+		}
+
+		repo.mu.Lock()
+		foundDelivered := false
+		for _, su := range repo.statusUpdates {
+			if su.id == nIDLow && su.to == domain.StatusDelivered {
+				foundDelivered = true
+				break
+			}
+		}
+		repo.mu.Unlock()
+
+		if !foundDelivered {
+			t.Error("expected low priority notification to be delivered")
+		}
+	})
+}
+
+func TestProcessMessage_CircuitBreakerMaxRequeueExceeded(t *testing.T) {
+	t.Run("moves to DLQ when max requeue count exceeded", func(t *testing.T) {
+		nID := uuid.New()
+		repo := newMockRepo()
+		repo.notifications[nID] = &domain.Notification{
+			ID:           nID,
+			Status:       domain.StatusQueued,
+			Channel:      domain.ChannelEmail,
+			Priority:     domain.PriorityNormal,
+			RequeueCount: domain.MaxRequeueCount,
+		}
+
+		consumer := &mockConsumer{}
+		publisher := &mockPublisher{}
+		metrics := &mockMetrics{}
+		broadcaster := &mockBroadcaster{}
+
+		cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			OpenDuration:     1 * time.Hour,
+			HalfOpenMax:      1,
+		})
+		cb := cbRegistry.Get("email")
+		cb.RecordFailure()
+
+		wp := newTestWorkerPool(func(o *testPoolOpts) {
+			o.repo = repo
+			o.consumer = consumer
+			o.publisher = publisher
+		})
+		wp.cbRegistry = cbRegistry
+		wp.metrics = metrics
+		wp.broadcaster = broadcaster
+
+		msg := queue.Message{
+			ID:             "msg-cb-dlq",
+			StreamName:     queue.StreamNormal,
+			NotificationID: nID,
+			Channel:        domain.ChannelEmail,
+			Recipient:      "user@example.com",
+			Content:        "Max requeue test",
+		}
+
+		ctx := context.Background()
+		wp.processMessage(ctx, msg)
+
+		consumer.mu.Lock()
+		if len(consumer.ackCalls) == 0 {
+			t.Error("expected message to be acknowledged")
+		}
+		consumer.mu.Unlock()
+
+		repo.mu.Lock()
+		if len(repo.dlqEntries) != 1 {
+			t.Fatalf("expected 1 DLQ entry, got %d", len(repo.dlqEntries))
+		}
+		if repo.dlqEntries[0].ID != nID {
+			t.Errorf("expected DLQ entry for %s, got %s", nID, repo.dlqEntries[0].ID)
+		}
+		repo.mu.Unlock()
+
+		broadcaster.mu.Lock()
+		foundFailed := false
+		for _, b := range broadcaster.broadcasts {
+			if b.id == nID && b.status == domain.StatusFailed {
+				foundFailed = true
+				break
+			}
+		}
+		broadcaster.mu.Unlock()
+		if !foundFailed {
+			t.Error("expected broadcaster to be called with StatusFailed")
+		}
+
+		time.Sleep(700 * time.Millisecond)
+		publisher.mu.Lock()
+		if len(publisher.published) != 0 {
+			t.Errorf("expected 0 re-enqueue when max requeue exceeded, got %d", len(publisher.published))
+		}
+		publisher.mu.Unlock()
+	})
+
+	t.Run("increments requeue count and re-enqueues when under limit", func(t *testing.T) {
+		nID := uuid.New()
+		repo := newMockRepo()
+		repo.notifications[nID] = &domain.Notification{
+			ID:           nID,
+			Status:       domain.StatusQueued,
+			Channel:      domain.ChannelEmail,
+			Priority:     domain.PriorityNormal,
+			RequeueCount: 5,
+		}
+
+		consumer := &mockConsumer{}
+		publisher := &mockPublisher{}
+		metrics := &mockMetrics{}
+
+		cbRegistry := delivery.NewCircuitBreakerRegistry(delivery.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			OpenDuration:     1 * time.Hour,
+			HalfOpenMax:      1,
+		})
+		cb := cbRegistry.Get("email")
+		cb.RecordFailure()
+
+		wp := newTestWorkerPool(func(o *testPoolOpts) {
+			o.repo = repo
+			o.consumer = consumer
+			o.publisher = publisher
+		})
+		wp.cbRegistry = cbRegistry
+		wp.metrics = metrics
+
+		msg := queue.Message{
+			ID:             "msg-cb-requeue",
+			StreamName:     queue.StreamNormal,
+			NotificationID: nID,
+			Channel:        domain.ChannelEmail,
+			Recipient:      "user@example.com",
+			Content:        "Requeue test",
+		}
+
+		ctx := context.Background()
+		wp.processMessage(ctx, msg)
+
+		repo.mu.Lock()
+		if len(repo.dlqEntries) != 0 {
+			t.Error("should not move to DLQ when under max requeue count")
+		}
+		repo.mu.Unlock()
+
+		time.Sleep(700 * time.Millisecond)
+		publisher.mu.Lock()
+		if len(publisher.published) != 1 {
+			t.Errorf("expected 1 re-enqueue, got %d", len(publisher.published))
+		}
+		publisher.mu.Unlock()
+	})
 }
