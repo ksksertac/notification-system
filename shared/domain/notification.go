@@ -85,6 +85,7 @@ const (
 	StatusQueued     Status = "queued"
 	StatusProcessing Status = "processing"
 	StatusDelivered  Status = "delivered"
+	StatusRetrying   Status = "retrying"
 	StatusFailed     Status = "failed"
 	StatusCancelled  Status = "cancelled"
 )
@@ -92,7 +93,8 @@ const (
 var validTransitions = map[Status][]Status{
 	StatusPending:    {StatusQueued, StatusCancelled},
 	StatusQueued:     {StatusProcessing, StatusCancelled},
-	StatusProcessing: {StatusDelivered, StatusFailed},
+	StatusProcessing: {StatusDelivered, StatusFailed, StatusRetrying},
+	StatusRetrying:   {StatusQueued},
 	StatusFailed:     {StatusQueued},
 }
 

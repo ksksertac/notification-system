@@ -27,6 +27,10 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **Priority Queue Fairness**: Replaced sequential stream polling with deficit round-robin scheduling to prevent low-priority starvation. Each priority stream accumulates deficit credits proportional to its weight; the stream with highest deficit is served first, ensuring all priorities get throughput.
 - **Circuit Breaker Requeue Safety**: Added `RequeueCount` field and `MaxRequeueCount` (50) limit. Notifications re-enqueued due to circuit breaker open state now track requeue attempts; exceeding the limit moves the notification to DLQ instead of infinite re-enqueue loops.
 - **WebSocket Swagger Docs**: Added Swagger annotations to `/ws` endpoint for OpenAPI spec completeness.
+- **Retrying Status (Y1)**: Separated `retrying` from `failed` in the status model. `failed` now exclusively means permanent failure (DLQ). `retrying` indicates a transient failure with scheduled retry. Lua scripts (`incrementRetryScript`, `getRetryReadyScript`) and status indexes updated accordingly.
+- **CB Path Status Reset (Y2)**: Circuit breaker open path now resets status `processing → queued` before re-enqueue, matching the rate-limiter path for consistency.
+- **Persistent Requeue (Y3)**: Replaced in-memory goroutine-based `reEnqueue` with persistent `idx:requeue` ZSET. Scheduler polls this ZSET every 2s and republishes ready notifications to streams. Crash-safe: no notification lost if worker dies mid-requeue.
+- **Migration Readiness (Y5)**: API startup now waits for the dbwriter's migration lock to be released before accepting traffic, preventing queries against unmigrated tables on fresh deployments.
 
 ## Key Commands Used
 
@@ -61,7 +65,7 @@ claude "move migrator from API to dbwriter"
 - All background operations use `context.WithTimeout` (no unbounded contexts)
 - Stream messages ACK'd only after all side effects complete
 - Correlation ID propagated across services via `shared/tracing` context key and Redis Stream messages
-- Re-enqueue goroutines bounded by semaphore channel to prevent leak under backpressure
+- Re-enqueue via persistent `idx:requeue` ZSET (scheduler-driven, crash-safe)
 - Deficit round-robin scheduling for priority queues (prevents low-priority starvation)
 - Circuit breaker re-enqueue capped at `MaxRequeueCount` (50) to prevent infinite loops
 - Provider response bodies capped at 1 MB (`io.LimitReader`)

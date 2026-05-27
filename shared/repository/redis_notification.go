@@ -24,6 +24,7 @@ const (
 	KeyIdxBatch     = "idx:batch:"
 	KeyIdxIdemKey   = "idx:idempotency:"
 	KeyIdxRetry     = "idx:retry"
+	KeyIdxRequeue   = "idx:requeue"
 	KeySchedule     = "schedule:pending"
 	KeyPersistQueue = "persist:queue"
 	KeyDLQ          = "dlq:"
@@ -732,13 +733,13 @@ func (r *redisNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id 
 }
 
 // incrementRetryScript atomically increments retry, updates status indexes, and adds to retry index.
-// KEYS: [1]=notification key, [2]=idx:status:processing, [3]=idx:status:failed,
+// KEYS: [1]=notification key, [2]=idx:status:processing, [3]=idx:status:retrying,
 //        [4]=idx:created_at, [5]=idx:retry, [6]=persist:queue
 // ARGV: [1]=member, [2]=now, [3]=nextRetryAt, [4]=errorMsg, [5]=persistEvent JSON, [6]=retryScore (nanos)
 var incrementRetryScript = redis.NewScript(`
 local key = KEYS[1]
 local idxProcessing = KEYS[2]
-local idxFailed = KEYS[3]
+local idxRetrying = KEYS[3]
 local idxCreatedAt = KEYS[4]
 local idxRetry = KEYS[5]
 local persistQueue = KEYS[6]
@@ -749,7 +750,7 @@ local errorMsg = ARGV[4]
 local persistEvt = ARGV[5]
 
 redis.call('HINCRBY', key, 'retry_count', 1)
-redis.call('HSET', key, 'next_retry_at', nextRetryAt, 'error_message', errorMsg, 'status', 'failed', 'updated_at', now)
+redis.call('HSET', key, 'next_retry_at', nextRetryAt, 'error_message', errorMsg, 'status', 'retrying', 'updated_at', now)
 
 -- Get score from the created_at index
 local score = redis.call('ZSCORE', idxCreatedAt, member)
@@ -758,7 +759,7 @@ if not score then
 end
 
 redis.call('ZREM', idxProcessing, member)
-redis.call('ZADD', idxFailed, score, member)
+redis.call('ZADD', idxRetrying, score, member)
 
 -- Add to retry index with nextRetryAt as score
 local retryScore = tonumber(ARGV[6])
@@ -797,7 +798,7 @@ func (r *redisNotificationRepo) IncrementRetry(ctx context.Context, id uuid.UUID
 	keys := []string{
 		key,
 		KeyIdxStatus + string(domain.StatusProcessing),
-		KeyIdxStatus + string(domain.StatusFailed),
+		KeyIdxStatus + string(domain.StatusRetrying),
 		KeyIdxCreatedAt,
 		KeyIdxRetry,
 		KeyPersistQueue,
@@ -1051,11 +1052,11 @@ func (r *redisNotificationRepo) RecoverStuckQueued(ctx context.Context, stuckThr
 
 // getRetryReadyScript atomically claims retry-ready notifications with CAS check.
 // Prevents race conditions when multiple scheduler instances run concurrently.
-// KEYS: [1]=idx:retry, [2]=idx:status:failed, [3]=idx:status:queued, [4]=idx:created_at, [5]=persist:queue
+// KEYS: [1]=idx:retry, [2]=idx:status:retrying, [3]=idx:status:queued, [4]=idx:created_at, [5]=persist:queue
 // ARGV: [1]=nowNano, [2]=limit, [3]=now (RFC3339Nano)
 var getRetryReadyScript = redis.NewScript(`
 local retryKey = KEYS[1]
-local failedIdx = KEYS[2]
+local retryingIdx = KEYS[2]
 local queuedIdx = KEYS[3]
 local idxCreatedAt = KEYS[4]
 local persistQueue = KEYS[5]
@@ -1069,7 +1070,7 @@ local claimed = {}
 for _, id in ipairs(ready) do
     local nKey = 'notification:' .. id
     local status = redis.call('HGET', nKey, 'status')
-    if status == 'failed' then
+    if status == 'retrying' then
         redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
         redis.call('ZREM', retryKey, id)
 
@@ -1078,10 +1079,10 @@ for _, id in ipairs(ready) do
             score = 0
         end
 
-        redis.call('ZREM', failedIdx, id)
+        redis.call('ZREM', retryingIdx, id)
         redis.call('ZADD', queuedIdx, score, id)
 
-        local evt = cjson.encode({action='update_status', extra={id=id, from='failed', to='queued'}, timestamp=now})
+        local evt = cjson.encode({action='update_status', extra={id=id, from='retrying', to='queued'}, timestamp=now})
         redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
 
         table.insert(claimed, id)
@@ -1099,7 +1100,7 @@ func (r *redisNotificationRepo) GetRetryReady(ctx context.Context, limit int) ([
 	ids, err := getRetryReadyScript.Run(ctx, r.client,
 		[]string{
 			KeyIdxRetry,
-			KeyIdxStatus + string(domain.StatusFailed),
+			KeyIdxStatus + string(domain.StatusRetrying),
 			KeyIdxStatus + string(domain.StatusQueued),
 			KeyIdxCreatedAt,
 			KeyPersistQueue,
@@ -1328,6 +1329,60 @@ func (r *redisNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.
 		"requeue_count", strconv.Itoa(count),
 		"updated_at", time.Now().UTC().Format(time.RFC3339Nano),
 	).Err()
+}
+
+func (r *redisNotificationRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	return r.client.ZAdd(ctx, KeyIdxRequeue, redis.Z{
+		Score:  float64(requeueAt.UnixNano()),
+		Member: id.String(),
+	}).Err()
+}
+
+var getRequeueReadyScript = redis.NewScript(`
+local requeueKey = KEYS[1]
+local queuedIdx = KEYS[2]
+local idxCreatedAt = KEYS[3]
+local nowNano = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+
+local ready = redis.call('ZRANGEBYSCORE', requeueKey, '-inf', nowNano, 'LIMIT', 0, limit)
+
+local claimed = {}
+for _, id in ipairs(ready) do
+    local nKey = 'notification:' .. id
+    local status = redis.call('HGET', nKey, 'status')
+    if status == 'queued' then
+        redis.call('ZREM', requeueKey, id)
+        table.insert(claimed, id)
+    else
+        redis.call('ZREM', requeueKey, id)
+    end
+end
+
+return claimed
+`)
+
+func (r *redisNotificationRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	now := time.Now().UTC()
+	nowNano := now.UnixNano()
+
+	ids, err := getRequeueReadyScript.Run(ctx, r.client,
+		[]string{
+			KeyIdxRequeue,
+			KeyIdxStatus + string(domain.StatusQueued),
+			KeyIdxCreatedAt,
+		},
+		nowNano, limit,
+	).StringSlice()
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("get requeue ready: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	return r.getNotificationsByIDs(ctx, ids)
 }
 
 func ParsePersistEvent(values map[string]interface{}) (*PersistEvent, error) {

@@ -152,6 +152,12 @@ func (m *mockRepo) RecoverOrphanedPending(_ context.Context, _ time.Duration, _ 
 func (m *mockRepo) UpdateRequeueCount(_ context.Context, _ uuid.UUID, _ int) error {
 	return nil
 }
+func (m *mockRepo) AddToRequeueSet(_ context.Context, _ uuid.UUID, _ time.Time) error {
+	return nil
+}
+func (m *mockRepo) GetRequeueReady(_ context.Context, _ int) ([]*domain.Notification, error) {
+	return nil, nil
+}
 
 // Thread-safe getters for assertions
 

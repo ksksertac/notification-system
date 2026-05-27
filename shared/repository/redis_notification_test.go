@@ -267,8 +267,8 @@ func TestIncrementRetry(t *testing.T) {
 	if got.RetryCount != 1 {
 		t.Errorf("RetryCount should be 1, got %d", got.RetryCount)
 	}
-	if got.Status != domain.StatusFailed {
-		t.Errorf("Status should be failed, got %v", got.Status)
+	if got.Status != domain.StatusRetrying {
+		t.Errorf("Status should be retrying, got %v", got.Status)
 	}
 	if got.ErrorMessage == nil || *got.ErrorMessage != errMsg {
 		t.Errorf("ErrorMessage mismatch: got %v, want %v", got.ErrorMessage, errMsg)

@@ -90,6 +90,7 @@ type SchedulerConfig struct {
 	StuckThreshold    time.Duration
 	RecoveryInterval  time.Duration
 	RetryInterval     time.Duration
+	RequeueInterval   time.Duration
 	OrphanThreshold   time.Duration
 }
 
@@ -153,6 +154,7 @@ func Load() (*Config, error) {
 			StuckThreshold:   envDurationOrDefault("SCHEDULER_STUCK_THRESHOLD", 2*time.Minute),
 			RecoveryInterval: envDurationOrDefault("SCHEDULER_RECOVERY_INTERVAL", 30*time.Second),
 			RetryInterval:    envDurationOrDefault("SCHEDULER_RETRY_INTERVAL", 10*time.Second),
+			RequeueInterval:  envDurationOrDefault("SCHEDULER_REQUEUE_INTERVAL", 2*time.Second),
 			OrphanThreshold:  envDurationOrDefault("SCHEDULER_ORPHAN_THRESHOLD", 30*time.Second),
 		},
 		Log: LogConfig{

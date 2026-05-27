@@ -76,6 +76,7 @@ func run() error {
 		StuckThreshold:   cfg.Scheduler.StuckThreshold,
 		RecoveryInterval: cfg.Scheduler.RecoveryInterval,
 		RetryInterval:    cfg.Scheduler.RetryInterval,
+		RequeueInterval:  cfg.Scheduler.RequeueInterval,
 		OrphanThreshold:  cfg.Scheduler.OrphanThreshold,
 	}, logger, nil)
 	sched.Start(schedCtx)

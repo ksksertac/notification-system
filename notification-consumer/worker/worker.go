@@ -49,9 +49,8 @@ type WorkerPool struct {
 	broadcaster StatusBroadcaster
 	metrics     MetricsRecorder
 	tmplEngine  template.Engine
-	logger      *slog.Logger
-	wg          sync.WaitGroup
-	requeueSem  chan struct{}
+	logger *slog.Logger
+	wg     sync.WaitGroup
 
 	deficitMu sync.Mutex
 	deficit   [3]int
@@ -83,8 +82,7 @@ func NewWorkerPool(
 		broadcaster: broadcaster,
 		metrics:     metrics,
 		tmplEngine:  tmplEngine,
-		logger:      logger,
-		requeueSem:  make(chan struct{}, cfg.WorkerCount*2),
+		logger: logger,
 	}
 }
 
@@ -250,6 +248,7 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		}
 		n.RequeueCount++
 		wp.repo.UpdateRequeueCount(ctx, n.ID, n.RequeueCount)
+		wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued)
 		wp.reEnqueue(ctx, n)
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
@@ -354,36 +353,18 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 		logger.Error("failed to increment retry count", "error", err)
 	}
 
+	if wp.broadcaster != nil {
+		wp.broadcaster.Broadcast(n.ID, domain.StatusRetrying)
+	}
+
 	logger.Warn("retry scheduled via persistence", "retry_count", n.RetryCount+1, "next_retry_at", nextRetry, "error", errMsg)
 }
 
 func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification) {
-	select {
-	case wp.requeueSem <- struct{}{}:
-	default:
-		wp.logger.Warn("requeue semaphore full, reverting status for recovery", "notification_id", n.ID)
-		wp.repo.UpdateStatus(ctx, n.ID, domain.StatusProcessing, domain.StatusQueued)
-		return
+	requeueAt := time.Now().Add(500 * time.Millisecond)
+	if err := wp.repo.AddToRequeueSet(ctx, n.ID, requeueAt); err != nil {
+		wp.logger.Error("failed to add to requeue set", "notification_id", n.ID, "error", err)
 	}
-
-	wp.wg.Add(1)
-	go func() {
-		defer wp.wg.Done()
-		defer func() { <-wp.requeueSem }()
-
-		select {
-		case <-time.After(500 * time.Millisecond):
-		case <-ctx.Done():
-			return
-		}
-
-		publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := wp.publisher.Publish(publishCtx, n); err != nil {
-			wp.logger.Error("failed to re-enqueue notification", "notification_id", n.ID, "error", err)
-		}
-	}()
 }
 
 func (wp *WorkerPool) runClaimer(ctx context.Context) {

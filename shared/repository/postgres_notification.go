@@ -482,3 +482,11 @@ func (r *postgresNotificationRepo) UpdateRequeueCount(ctx context.Context, id uu
 	)
 	return err
 }
+
+func (r *postgresNotificationRepo) AddToRequeueSet(_ context.Context, _ uuid.UUID, _ time.Time) error {
+	return nil
+}
+
+func (r *postgresNotificationRepo) GetRequeueReady(_ context.Context, _ int) ([]*domain.Notification, error) {
+	return nil, nil
+}

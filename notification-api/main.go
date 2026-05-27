@@ -69,6 +69,10 @@ func run() error {
 	cancel()
 	logger.Info("connected to redis")
 
+	if err := waitForMigrations(redisClient, logger); err != nil {
+		return fmt.Errorf("waiting for migrations: %w", err)
+	}
+
 	db, err := database.NewPostgres(cfg.DB)
 	if err != nil {
 		return fmt.Errorf("connecting to postgres (read fallback): %w", err)
@@ -138,6 +142,29 @@ func run() error {
 
 	logger.Info("api shutdown complete")
 	return nil
+}
+
+func waitForMigrations(client *redis.Client, logger *slog.Logger) error {
+	const (
+		lockKey    = "migration-leader-lock"
+		maxRetries = 30
+		retryDelay = 2 * time.Second
+	)
+
+	for i := 0; i < maxRetries; i++ {
+		exists, err := client.Exists(context.Background(), lockKey).Result()
+		if err != nil {
+			logger.Warn("error checking migration lock", "error", err)
+		} else if exists == 0 {
+			logger.Info("migration check passed, no active migration lock")
+			return nil
+		}
+
+		logger.Info("waiting for dbwriter migration to complete", "attempt", i+1)
+		time.Sleep(retryDelay)
+	}
+
+	return fmt.Errorf("timed out waiting for database migrations to complete")
 }
 
 func setupLogger(level string) *slog.Logger {

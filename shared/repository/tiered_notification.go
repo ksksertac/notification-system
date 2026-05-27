@@ -114,3 +114,11 @@ func (t *TieredNotificationRepo) RecoverOrphanedPending(ctx context.Context, sta
 func (t *TieredNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
 	return t.hot.UpdateRequeueCount(ctx, id, count)
 }
+
+func (t *TieredNotificationRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	return t.hot.AddToRequeueSet(ctx, id, requeueAt)
+}
+
+func (t *TieredNotificationRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return t.hot.GetRequeueReady(ctx, limit)
+}

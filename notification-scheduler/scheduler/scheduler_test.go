@@ -99,6 +99,12 @@ func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration tim
 func (m *mockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
 	return nil
 }
+func (m *mockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	return nil
+}
+func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
 

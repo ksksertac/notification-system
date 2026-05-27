@@ -62,6 +62,8 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 │    orphaned 'pending' (>30s, instant) → set to 'queued' + publish to stream  │
 │  Retry recovery (10s):                                                       │
 │    idx:retry sorted set (score=next_retry_at) → re-enqueue when delay expires│
+│  Requeue recovery (2s):                                                      │
+│    idx:requeue sorted set → re-publish CB/rate-limit delayed notifications   │
 └───────────────────────────────────────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────────────────────────┐
@@ -251,7 +253,7 @@ All critical Redis operations are performed via Lua scripts to ensure atomicity:
 | **UpdateStatus (CAS)** | Read current status + read score from idx:created_at + HSET + ZREM/ZADD status indexes + persist event |
 | **IncrementRetry** | HINCRBY retry_count + HSET next fields + ZREM/ZADD status indexes + ZADD idx:retry + persist event |
 | **MoveToDLQ** | Update notification status + create DLQ hash entry + ZREM/ZADD status indexes + persist event — all atomic |
-| **GetRetryReady** | Scan idx:retry + CAS check (status must be 'failed') + transition to 'queued' + ZREM from retry/failed indexes + ZADD queued index + persist event — prevents double-claiming by multiple scheduler pods |
+| **GetRetryReady** | Scan idx:retry + CAS check (status must be 'retrying') + transition to 'queued' + ZREM from retry/retrying indexes + ZADD queued index + persist event — prevents double-claiming by multiple scheduler pods |
 | **Recovery scripts** | Status reset + `updated_at` comparison against cutoff (not just `created_at` score) + ZREM/ZADD index updates + persist event — correctly skips recently re-queued notifications |
 
 This eliminates TOCTOU (time-of-check-time-of-use) race conditions that existed when these operations were split across multiple Redis commands.
@@ -290,7 +292,7 @@ POST /api/v1/notifications
 | Scheduler pod killed after claim, before stream publish | Notification stuck as `queued` in Redis | Recovery loop resets to `pending` + re-publishes to stream | ~2min |
 | Consumer pod killed mid-processing | Redis Stream message unacknowledged | XPENDING + XCLAIM recovery (claimer goroutine) | ~15s |
 | Consumer pod killed mid-processing (status stuck) | Notification stuck as `processing` in Redis | Recovery loop resets to `queued` + re-publishes to stream | ~2min |
-| Provider temporary failure | Delivery fails with retryable error | Exponential backoff retry via `idx:retry` sorted set — scheduler re-enqueues when delay expires | 2s–60s |
+| Provider temporary failure | Delivery fails with retryable error, status set to `retrying` | Exponential backoff retry via `idx:retry` sorted set — scheduler re-enqueues when delay expires | 2s–60s |
 | Provider permanent failure | Delivery fails with non-retryable error | Moved to DLQ immediately | Immediate |
 | Max retries exceeded | All retry attempts exhausted | Moved to DLQ | Immediate |
 | persist:queue consumer (dbwriter) down | Notifications remain in Redis (hot store) | dbwriter catches up on restart via consumer group | Minutes |
@@ -380,6 +382,7 @@ With buffer:     1000 requests → 2 pipeline HSETs (500 each) → 2 Redis round
 | `notifications:high` | Stream | High-priority delivery queue |
 | `notifications:normal` | Stream | Normal-priority delivery queue |
 | `idx:retry` | Sorted Set | Retry scheduling index (score=next_retry_at as UnixNano) |
+| `idx:requeue` | Sorted Set | Re-enqueue scheduling index for CB/rate-limit deferred notifications |
 | `cb:{channel}` | Hash | Redis-backed circuit breaker state per channel |
 | `dlq:{notification_id}` | Hash | Dead letter queue entry (failed notification + error details) |
 | `notifications:low` | Stream | Low-priority delivery queue |
@@ -470,7 +473,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **Template Caching**: compiled templates cached in `sync.Map`, `html/template` for XSS safety
 - **Atomic Idempotency**: Lua `createScript` checks the idempotency key (`GET`) before writing — prevents duplicate notifications under concurrent requests with the same key (eliminates TOCTOU race between `GetByIdempotencyKey` and `Create`)
 - **Distributed Tracing**: Full OpenTelemetry SDK integration (OTLP/HTTP exporter → Jaeger). All 4 services initialize `tracing.InitTracer()` at startup. API uses `otelhttp` middleware for automatic span creation. Correlation ID propagated via Redis Stream messages for log-to-trace correlation
-- **Bounded Re-enqueue**: Semaphore channel (`WorkerCount*2`) limits concurrent re-enqueue goroutines — prevents goroutine leak under sustained rate limiting or circuit breaker open states. When semaphore is full, notification status is reverted to `queued` for recovery loop pickup
+- **Persistent Re-enqueue**: Rate-limited and circuit-breaker-deferred notifications are added to a persistent `idx:requeue` ZSET instead of in-memory goroutines. The scheduler polls this ZSET every 2s and republishes ready notifications to streams — crash-safe, no goroutine leaks
 - **Provider Response Limit**: `io.LimitReader(resp.Body, 1MB)` prevents memory exhaustion from oversized provider responses
 - **Ack-After-Side-Effects**: consumer ACKs stream messages only after all status updates and side effects complete
 - **Bounded Contexts**: all background operations use `context.WithTimeout` — no unbounded `context.Background()` calls

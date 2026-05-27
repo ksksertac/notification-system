@@ -16,6 +16,7 @@ type MetricsRecorder interface {
 	RecordClaimed(count int)
 	RecordRecovered(kind string, count int)
 	RecordRetryReady(count int)
+	RecordRequeueReady(count int)
 }
 
 // noopMetrics is a no-op implementation of MetricsRecorder.
@@ -24,6 +25,7 @@ type noopMetrics struct{}
 func (noopMetrics) RecordClaimed(int)          {}
 func (noopMetrics) RecordRecovered(string, int) {}
 func (noopMetrics) RecordRetryReady(int)        {}
+func (noopMetrics) RecordRequeueReady(int)      {}
 
 // Config holds all configurable scheduler parameters.
 type Config struct {
@@ -32,6 +34,7 @@ type Config struct {
 	StuckThreshold   time.Duration
 	RecoveryInterval time.Duration
 	RetryInterval    time.Duration
+	RequeueInterval  time.Duration
 	OrphanThreshold  time.Duration
 }
 
@@ -43,6 +46,7 @@ type Scheduler struct {
 	stuckThreshold   time.Duration
 	recoveryInterval time.Duration
 	retryInterval    time.Duration
+	requeueInterval  time.Duration
 	orphanThreshold  time.Duration
 	logger           *slog.Logger
 	metrics          MetricsRecorder
@@ -62,6 +66,7 @@ func New(
 		StuckThreshold:   2 * time.Minute,
 		RecoveryInterval: 30 * time.Second,
 		RetryInterval:    10 * time.Second,
+		RequeueInterval:  2 * time.Second,
 		OrphanThreshold:  30 * time.Second,
 	}, logger, nil)
 }
@@ -85,6 +90,9 @@ func NewWithConfig(
 	if cfg.RetryInterval <= 0 {
 		cfg.RetryInterval = 10 * time.Second
 	}
+	if cfg.RequeueInterval <= 0 {
+		cfg.RequeueInterval = 2 * time.Second
+	}
 	if cfg.OrphanThreshold <= 0 {
 		cfg.OrphanThreshold = 30 * time.Second
 	}
@@ -99,6 +107,7 @@ func NewWithConfig(
 		stuckThreshold:   cfg.StuckThreshold,
 		recoveryInterval: cfg.RecoveryInterval,
 		retryInterval:    cfg.RetryInterval,
+		requeueInterval:  cfg.RequeueInterval,
 		orphanThreshold:  cfg.OrphanThreshold,
 		logger:           logger,
 		metrics:          metrics,
@@ -106,10 +115,11 @@ func NewWithConfig(
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.runScheduler(ctx)
 	go s.runRecovery(ctx)
 	go s.runRetryRecovery(ctx)
+	go s.runRequeueRecovery(ctx)
 	s.logger.Info("scheduler started", "poll_interval", s.pollInterval, "batch_size", s.batchSize)
 }
 
@@ -229,6 +239,47 @@ func (s *Scheduler) processRetryReady(ctx context.Context) {
 	if err := s.publisher.PublishBatch(ctx, notifications); err != nil {
 		tracing.RecordError(span, err)
 		s.logger.Error("failed to publish retry-ready batch to stream", "count", len(notifications), "error", err)
+	}
+}
+
+func (s *Scheduler) runRequeueRecovery(ctx context.Context) {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(s.requeueInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.processRequeueReady(ctx)
+		}
+	}
+}
+
+func (s *Scheduler) processRequeueReady(ctx context.Context) {
+	ctx, span := tracing.StartSpan(ctx, "scheduler.ProcessRequeueReady")
+	defer span.End()
+
+	notifications, err := s.repo.GetRequeueReady(ctx, s.batchSize)
+	if err != nil {
+		tracing.RecordError(span, err)
+		s.logger.Error("failed to get requeue-ready notifications", "error", err)
+		return
+	}
+
+	if len(notifications) == 0 {
+		return
+	}
+
+	tracing.SetIntAttr(span, "scheduler.requeue_count", len(notifications))
+	s.logger.Info("re-enqueuing requeue-ready notifications", "count", len(notifications))
+	s.metrics.RecordRequeueReady(len(notifications))
+
+	if err := s.publisher.PublishBatch(ctx, notifications); err != nil {
+		tracing.RecordError(span, err)
+		s.logger.Error("failed to publish requeue-ready batch to stream", "count", len(notifications), "error", err)
 	}
 }
 

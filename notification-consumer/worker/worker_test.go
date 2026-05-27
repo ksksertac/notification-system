@@ -125,11 +125,12 @@ func (m *mockRetryStrategy) ShouldRetry(attempt int, maxAttempts int) bool {
 }
 
 type mockRepo struct {
-	mu             sync.Mutex
-	notifications  map[uuid.UUID]*domain.Notification
-	statusUpdates  []statusUpdate
-	dlqEntries     []*domain.Notification
+	mu              sync.Mutex
+	notifications   map[uuid.UUID]*domain.Notification
+	statusUpdates   []statusUpdate
+	dlqEntries      []*domain.Notification
 	retryIncrements []retryIncrement
+	requeueSetIDs   []uuid.UUID
 }
 
 type statusUpdate struct {
@@ -223,6 +224,15 @@ func (m *mockRepo) RecoverOrphanedPending(ctx context.Context, staleDuration tim
 }
 func (m *mockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
 	return nil
+}
+func (m *mockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requeueSetIDs = append(m.requeueSetIDs, id)
+	return nil
+}
+func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
 }
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
@@ -344,7 +354,6 @@ func newTestWorkerPool(opts ...func(*testPoolOpts)) *WorkerPool {
 		metrics:     metrics,
 		tmplEngine:  tmplEngine,
 		logger:      logger,
-		requeueSem:  make(chan struct{}, cfg.WorkerCount*2),
 	}
 }
 
@@ -1175,15 +1184,14 @@ func TestProcessMessage_RateLimitDenied(t *testing.T) {
 		t.Error("expected status to be reverted to queued on rate limit denial")
 	}
 
-	// Verify re-enqueue was triggered (publisher will be called after 500ms delay)
-	time.Sleep(700 * time.Millisecond)
-	publisher.mu.Lock()
-	if len(publisher.published) != 1 {
-		t.Errorf("expected 1 re-enqueue, got %d", len(publisher.published))
-	} else if publisher.published[0].ID != nID {
-		t.Errorf("expected re-enqueued notification ID %s, got %s", nID, publisher.published[0].ID)
+	// Verify re-enqueue was added to persistent requeue set
+	repo.mu.Lock()
+	if len(repo.requeueSetIDs) != 1 {
+		t.Errorf("expected 1 requeue set entry, got %d", len(repo.requeueSetIDs))
+	} else if repo.requeueSetIDs[0] != nID {
+		t.Errorf("expected requeue set entry for %s, got %s", nID, repo.requeueSetIDs[0])
 	}
-	publisher.mu.Unlock()
+	repo.mu.Unlock()
 }
 
 func TestProcessMessage_RateLimitError(t *testing.T) {
@@ -1235,13 +1243,12 @@ func TestProcessMessage_RateLimitError(t *testing.T) {
 	}
 	metrics.mu.Unlock()
 
-	// Verify re-enqueue was triggered
-	time.Sleep(700 * time.Millisecond)
-	publisher.mu.Lock()
-	if len(publisher.published) != 1 {
-		t.Errorf("expected 1 re-enqueue after rate limiter error, got %d", len(publisher.published))
+	// Verify re-enqueue was added to persistent requeue set
+	repo.mu.Lock()
+	if len(repo.requeueSetIDs) != 1 {
+		t.Errorf("expected 1 requeue set entry after rate limiter error, got %d", len(repo.requeueSetIDs))
 	}
-	publisher.mu.Unlock()
+	repo.mu.Unlock()
 }
 
 func TestProcessMessage_CircuitBreakerOpen(t *testing.T) {
@@ -1302,15 +1309,14 @@ func TestProcessMessage_CircuitBreakerOpen(t *testing.T) {
 	}
 	metrics.mu.Unlock()
 
-	// Verify re-enqueue was triggered
-	time.Sleep(700 * time.Millisecond)
-	publisher.mu.Lock()
-	if len(publisher.published) != 1 {
-		t.Errorf("expected 1 re-enqueue when CB open, got %d", len(publisher.published))
-	} else if publisher.published[0].ID != nID {
-		t.Errorf("expected re-enqueued notification ID %s, got %s", nID, publisher.published[0].ID)
+	// Verify re-enqueue was added to persistent requeue set
+	repo.mu.Lock()
+	if len(repo.requeueSetIDs) != 1 {
+		t.Errorf("expected 1 requeue set entry when CB open, got %d", len(repo.requeueSetIDs))
+	} else if repo.requeueSetIDs[0] != nID {
+		t.Errorf("expected requeue set entry for %s, got %s", nID, repo.requeueSetIDs[0])
 	}
-	publisher.mu.Unlock()
+	repo.mu.Unlock()
 }
 
 func TestProcessMessage_NotFoundInRepo(t *testing.T) {
@@ -1537,9 +1543,9 @@ func TestProcessMessage_TemplateRendering(t *testing.T) {
 }
 
 func TestReEnqueue(t *testing.T) {
-	publisher := &mockPublisher{}
+	repo := newMockRepo()
 	wp := newTestWorkerPool(func(o *testPoolOpts) {
-		o.publisher = publisher
+		o.repo = repo
 	})
 
 	n := &domain.Notification{
@@ -1552,17 +1558,15 @@ func TestReEnqueue(t *testing.T) {
 	ctx := context.Background()
 	wp.reEnqueue(ctx, n)
 
-	// reEnqueue publishes after a 500ms delay in a goroutine
-	time.Sleep(700 * time.Millisecond)
-
-	publisher.mu.Lock()
-	if len(publisher.published) != 1 {
-		t.Fatalf("expected 1 published notification, got %d", len(publisher.published))
+	// reEnqueue adds to persistent requeue set
+	repo.mu.Lock()
+	if len(repo.requeueSetIDs) != 1 {
+		t.Fatalf("expected 1 requeue set entry, got %d", len(repo.requeueSetIDs))
 	}
-	if publisher.published[0].ID != n.ID {
-		t.Errorf("expected published notification ID %s, got %s", n.ID, publisher.published[0].ID)
+	if repo.requeueSetIDs[0] != n.ID {
+		t.Errorf("expected requeue set entry for %s, got %s", n.ID, repo.requeueSetIDs[0])
 	}
-	publisher.mu.Unlock()
+	repo.mu.Unlock()
 }
 
 func TestPollStreams_ReadError(t *testing.T) {
@@ -1734,6 +1738,12 @@ func (m *errorMockRepo) RecoverOrphanedPending(ctx context.Context, staleDuratio
 func (m *errorMockRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
 	return nil
 }
+func (m *errorMockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	return nil
+}
+func (m *errorMockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
 
 var _ repository.NotificationRepository = (*errorMockRepo)(nil)
 
@@ -1784,55 +1794,37 @@ func (t *trackingConsumer) Len(ctx context.Context, stream string) (int64, error
 	return t.inner.Len(ctx, stream)
 }
 
-// --- Tests for reEnqueue semaphore full status revert ---
+// --- Tests for persistent reEnqueue via ZSET ---
 
-func TestReEnqueue_SemaphoreFull(t *testing.T) {
+func TestReEnqueue_AddsToRequeueSet(t *testing.T) {
 	repo := newMockRepo()
-	publisher := &mockPublisher{}
 
 	wp := newTestWorkerPool(func(o *testPoolOpts) {
 		o.repo = repo
-		o.publisher = publisher
 	})
-
-	// Fill the semaphore completely
-	for i := 0; i < cap(wp.requeueSem); i++ {
-		wp.requeueSem <- struct{}{}
-	}
 
 	n := &domain.Notification{
 		ID:       uuid.New(),
-		Status:   domain.StatusProcessing,
+		Status:   domain.StatusQueued,
 		Channel:  domain.ChannelEmail,
 		Priority: domain.PriorityNormal,
 	}
-	repo.mu.Lock()
-	repo.notifications[n.ID] = n
-	repo.mu.Unlock()
 
 	ctx := context.Background()
 	wp.reEnqueue(ctx, n)
 
-	// Should NOT publish (semaphore full, returns immediately)
-	time.Sleep(100 * time.Millisecond)
-	publisher.mu.Lock()
-	if len(publisher.published) != 0 {
-		t.Errorf("expected 0 published when semaphore full, got %d", len(publisher.published))
-	}
-	publisher.mu.Unlock()
-
-	// Should have reverted status from processing to queued
 	repo.mu.Lock()
-	foundRevert := false
-	for _, su := range repo.statusUpdates {
-		if su.id == n.ID && su.from == domain.StatusProcessing && su.to == domain.StatusQueued {
-			foundRevert = true
+	found := false
+	for _, id := range repo.requeueSetIDs {
+		if id == n.ID {
+			found = true
 			break
 		}
 	}
 	repo.mu.Unlock()
-	if !foundRevert {
-		t.Error("expected status revert from processing to queued when semaphore is full")
+
+	if !found {
+		t.Error("expected notification to be added to requeue set")
 	}
 }
 
@@ -2100,12 +2092,11 @@ func TestProcessMessage_CircuitBreakerMaxRequeueExceeded(t *testing.T) {
 			t.Error("expected broadcaster to be called with StatusFailed")
 		}
 
-		time.Sleep(700 * time.Millisecond)
-		publisher.mu.Lock()
-		if len(publisher.published) != 0 {
-			t.Errorf("expected 0 re-enqueue when max requeue exceeded, got %d", len(publisher.published))
+		repo.mu.Lock()
+		if len(repo.requeueSetIDs) != 0 {
+			t.Errorf("expected 0 requeue set entries when max requeue exceeded, got %d", len(repo.requeueSetIDs))
 		}
-		publisher.mu.Unlock()
+		repo.mu.Unlock()
 	})
 
 	t.Run("increments requeue count and re-enqueues when under limit", func(t *testing.T) {
@@ -2155,13 +2146,11 @@ func TestProcessMessage_CircuitBreakerMaxRequeueExceeded(t *testing.T) {
 		if len(repo.dlqEntries) != 0 {
 			t.Error("should not move to DLQ when under max requeue count")
 		}
-		repo.mu.Unlock()
-
-		time.Sleep(700 * time.Millisecond)
-		publisher.mu.Lock()
-		if len(publisher.published) != 1 {
-			t.Errorf("expected 1 re-enqueue, got %d", len(publisher.published))
+		if len(repo.requeueSetIDs) != 1 {
+			t.Errorf("expected 1 requeue set entry, got %d", len(repo.requeueSetIDs))
+		} else if repo.requeueSetIDs[0] != nID {
+			t.Errorf("expected requeue set entry for %s, got %s", nID, repo.requeueSetIDs[0])
 		}
-		publisher.mu.Unlock()
+		repo.mu.Unlock()
 	})
 }

@@ -147,6 +147,12 @@ func (m *mockNotificationRepo) RecoverOrphanedPending(ctx context.Context, stale
 func (m *mockNotificationRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
 	return nil
 }
+func (m *mockNotificationRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt time.Time) error {
+	return nil
+}
+func (m *mockNotificationRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	return nil, nil
+}
 
 func newTestNotification() *domain.Notification {
 	return &domain.Notification{
