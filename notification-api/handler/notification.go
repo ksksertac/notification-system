@@ -213,7 +213,7 @@ func (h *NotificationHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 // @Description List notifications with cursor-based pagination and optional filters
 // @Tags notifications
 // @Produce json
-// @Param status query string false "Filter by status (pending, queued, processing, delivered, failed, cancelled)"
+// @Param status query string false "Filter by status (pending, queued, processing, delivered, retrying, failed, cancelled)"
 // @Param channel query string false "Filter by channel (sms, email, push)"
 // @Param start_date query string false "Filter by start date (RFC3339)"
 // @Param end_date query string false "Filter by end date (RFC3339)"

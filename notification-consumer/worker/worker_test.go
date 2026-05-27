@@ -1316,7 +1316,19 @@ func TestProcessMessage_CircuitBreakerOpen(t *testing.T) {
 	} else if repo.requeueSetIDs[0] != nID {
 		t.Errorf("expected requeue set entry for %s, got %s", nID, repo.requeueSetIDs[0])
 	}
+
+	// Verify status was reset from processing to queued (Y2 consistency with rate-limit path)
+	foundReset := false
+	for _, su := range repo.statusUpdates {
+		if su.id == nID && su.from == domain.StatusProcessing && su.to == domain.StatusQueued {
+			foundReset = true
+			break
+		}
+	}
 	repo.mu.Unlock()
+	if !foundReset {
+		t.Error("expected status reset from processing to queued when CB is open")
+	}
 }
 
 func TestProcessMessage_NotFoundInRepo(t *testing.T) {

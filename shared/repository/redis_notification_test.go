@@ -2789,3 +2789,111 @@ func TestRecoverOrphanedPending_SkipsRecentlyUpdated(t *testing.T) {
 		t.Errorf("status should remain pending, got %v", got.Status)
 	}
 }
+
+func TestAddToRequeueSet(t *testing.T) {
+	_, mr, client := setupTestRepo(t)
+	repo := NewRedisNotificationRepo(client)
+	ctx := context.Background()
+
+	id := uuid.New()
+	requeueAt := time.Now().Add(500 * time.Millisecond)
+
+	err := repo.AddToRequeueSet(ctx, id, requeueAt)
+	if err != nil {
+		t.Fatalf("AddToRequeueSet failed: %v", err)
+	}
+
+	members, err := mr.ZMembers(KeyIdxRequeue)
+	if err != nil {
+		t.Fatalf("ZMembers failed: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member in requeue set, got %d", len(members))
+	}
+	if members[0] != id.String() {
+		t.Errorf("expected member %s, got %s", id.String(), members[0])
+	}
+}
+
+func TestGetRequeueReady(t *testing.T) {
+	repo, _, client := setupTestRepo(t)
+	ctx := context.Background()
+
+	n := newRedisTestNotification()
+	if err := repo.Create(ctx, n); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if _, err := repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued); err != nil {
+		t.Fatalf("UpdateStatus to queued failed: %v", err)
+	}
+
+	pastTime := time.Now().Add(-1 * time.Second)
+	client.ZAdd(ctx, KeyIdxRequeue, redis.Z{
+		Score:  float64(pastTime.UnixNano()),
+		Member: n.ID.String(),
+	})
+
+	notifications, err := repo.GetRequeueReady(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetRequeueReady failed: %v", err)
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 requeue-ready notification, got %d", len(notifications))
+	}
+	if notifications[0].ID != n.ID {
+		t.Errorf("expected notification ID %s, got %s", n.ID, notifications[0].ID)
+	}
+
+	count, err := client.ZCard(ctx, KeyIdxRequeue).Result()
+	if err != nil {
+		t.Fatalf("ZCard failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected requeue set to be empty after claim, got %d", count)
+	}
+}
+
+func TestGetRequeueReadyEmpty(t *testing.T) {
+	repo, _, _ := setupTestRepo(t)
+	ctx := context.Background()
+
+	notifications, err := repo.GetRequeueReady(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetRequeueReady failed: %v", err)
+	}
+	if len(notifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(notifications))
+	}
+}
+
+func TestGetRequeueReadySkipsNonQueued(t *testing.T) {
+	repo, _, client := setupTestRepo(t)
+	ctx := context.Background()
+
+	n := newRedisTestNotification()
+	if err := repo.Create(ctx, n); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	pastTime := time.Now().Add(-1 * time.Second)
+	client.ZAdd(ctx, KeyIdxRequeue, redis.Z{
+		Score:  float64(pastTime.UnixNano()),
+		Member: n.ID.String(),
+	})
+
+	notifications, err := repo.GetRequeueReady(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetRequeueReady failed: %v", err)
+	}
+	if len(notifications) != 0 {
+		t.Errorf("expected 0 notifications (non-queued should be skipped), got %d", len(notifications))
+	}
+
+	count, err := client.ZCard(ctx, KeyIdxRequeue).Result()
+	if err != nil {
+		t.Fatalf("ZCard failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected requeue set to be empty after skip, got %d", count)
+	}
+}

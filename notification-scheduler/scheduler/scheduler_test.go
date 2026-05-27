@@ -21,6 +21,7 @@ type mockRepo struct {
 	claimBatchFn              func(ctx context.Context, limit int) ([]*domain.Notification, error)
 	recoverStuckQueuedFn      func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error)
 	getRetryReadyFn           func(ctx context.Context, limit int) ([]*domain.Notification, error)
+	getRequeueReadyFn         func(ctx context.Context, limit int) ([]*domain.Notification, error)
 	recoverStuckProcessingFn  func(ctx context.Context, stuckThreshold time.Duration, limit int) ([]*domain.Notification, error)
 	recoverOrphanedPendingFn  func(ctx context.Context, staleDuration time.Duration, limit int) ([]*domain.Notification, error)
 }
@@ -103,6 +104,11 @@ func (m *mockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt 
 	return nil
 }
 func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getRequeueReadyFn != nil {
+		return m.getRequeueReadyFn(ctx, limit)
+	}
 	return nil, nil
 }
 
@@ -1180,6 +1186,72 @@ func TestScheduler_ContextCancellation(t *testing.T) {
 			// Successfully stopped
 		case <-time.After(2 * time.Second):
 			t.Fatal("scheduler did not stop after context cancellation")
+		}
+	})
+}
+
+func TestScheduler_RequeueRecovery(t *testing.T) {
+	t.Run("processRequeueReady publishes requeue-ready notifications", func(t *testing.T) {
+		past := time.Now().Add(-1 * time.Minute)
+		requeueReady := []*domain.Notification{
+			makeNotification(domain.PriorityNormal, past),
+			makeNotification(domain.PriorityHigh, past),
+		}
+
+		repo := &mockRepo{}
+		repo.getRequeueReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			return requeueReady, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.processRequeueReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+
+		if pub.publishCount != 2 {
+			t.Errorf("expected 2 requeue-ready published, got %d", pub.publishCount)
+		}
+	})
+
+	t.Run("processRequeueReady does nothing when empty", func(t *testing.T) {
+		repo := &mockRepo{}
+		repo.getRequeueReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			return nil, nil
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.processRequeueReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 0 {
+			t.Errorf("expected 0 published, got %d", pub.publishCount)
+		}
+	})
+
+	t.Run("processRequeueReady handles errors gracefully", func(t *testing.T) {
+		repo := &mockRepo{}
+		repo.getRequeueReadyFn = func(ctx context.Context, limit int) ([]*domain.Notification, error) {
+			return nil, errors.New("redis connection error")
+		}
+
+		pub := &mockPublisher{}
+		s := newTestScheduler(repo, pub)
+
+		ctx := context.Background()
+		s.processRequeueReady(ctx)
+
+		pub.mu.Lock()
+		defer pub.mu.Unlock()
+		if pub.publishCount != 0 {
+			t.Errorf("expected 0 published on error, got %d", pub.publishCount)
 		}
 	})
 }

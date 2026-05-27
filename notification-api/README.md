@@ -15,6 +15,7 @@ HTTP API microservice for the Event-Driven Notification System.
 - Swagger/OpenAPI documentation
 - Prometheus metrics (custom registry, route template labels) + structured JSON logging
 - Health check endpoint (Redis + PostgreSQL)
+- **Migration readiness**: waits for dbwriter migration lock to be released before accepting traffic (prevents queries against unmigrated tables on fresh deployments)
 - **Sentinel errors** (`ErrValidation`, `ErrNotFound`, `ErrConflict`, `ErrConcurrentModification`) with `errors.Is()`
 - **Correlation ID validation** (max 64 chars, alphanumeric + hyphens)
 

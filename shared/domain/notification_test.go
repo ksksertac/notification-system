@@ -114,7 +114,11 @@ func TestStatus_CanTransitionTo(t *testing.T) {
 		{StatusQueued, StatusDelivered, false},
 		{StatusProcessing, StatusDelivered, true},
 		{StatusProcessing, StatusFailed, true},
+		{StatusProcessing, StatusRetrying, true},
 		{StatusProcessing, StatusCancelled, false},
+		{StatusRetrying, StatusQueued, true},
+		{StatusRetrying, StatusDelivered, false},
+		{StatusRetrying, StatusProcessing, false},
 		{StatusFailed, StatusQueued, true},
 		{StatusFailed, StatusDelivered, false},
 		{StatusDelivered, StatusFailed, false},
@@ -138,6 +142,7 @@ func TestStatus_IsFinal(t *testing.T) {
 		{StatusPending, false},
 		{StatusQueued, false},
 		{StatusProcessing, false},
+		{StatusRetrying, false},
 		{StatusFailed, false},
 	}
 

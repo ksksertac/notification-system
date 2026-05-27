@@ -59,7 +59,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Filter by status (pending, queued, processing, delivered, failed, cancelled)",
+                        "description": "Filter by status (pending, queued, processing, delivered, retrying, failed, cancelled)",
                         "name": "status",
                         "in": "query"
                     },
@@ -731,7 +731,7 @@ const docTemplate = `{
         },
         "/ws": {
             "get": {
-                "description": "Upgrades to WebSocket connection. Server pushes JSON messages: {\"notification_id\":\"uuid\",\"status\":\"delivered|failed|processing\"}. Max 1000 concurrent connections. Ping/pong heartbeat every 30s.",
+                "description": "Upgrades to WebSocket connection. Server pushes JSON messages: {\"notification_id\":\"uuid\",\"status\":\"delivered|failed|retrying|processing\"}. Max 1000 concurrent connections. Ping/pong heartbeat every 30s.",
                 "tags": [
                     "websocket"
                 ],

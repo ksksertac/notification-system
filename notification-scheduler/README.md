@@ -134,6 +134,7 @@ All thresholds are configurable via environment variables or the `Config` struct
 | `SCHEDULER_STUCK_THRESHOLD` | `2m` | How long a queued/processing notification waits before recovery |
 | `SCHEDULER_RECOVERY_INTERVAL` | `30s` | How often the recovery loop runs |
 | `SCHEDULER_RETRY_INTERVAL` | `10s` | How often the retry recovery loop runs |
+| `SCHEDULER_REQUEUE_INTERVAL` | `2s` | How often the requeue recovery loop runs (CB/rate-limit deferred) |
 | `SCHEDULER_ORPHAN_THRESHOLD` | `30s` | How long an instant pending notification waits before recovery |
 
 ### Metrics (optional)
@@ -145,6 +146,7 @@ The scheduler accepts an optional `MetricsRecorder` interface:
 | `RecordClaimed(count int)` | After claiming a batch of scheduled notifications |
 | `RecordRecovered(count int)` | After recovering stuck notifications |
 | `RecordRetryReady(count int)` | After re-enqueuing retry-ready notifications |
+| `RecordRequeueReady(count int)` | After re-enqueuing CB/rate-limit deferred notifications |
 
 See [.env.example](.env.example) for all configuration options.
 
