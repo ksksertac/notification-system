@@ -22,10 +22,10 @@ type MetricsRecorder interface {
 // noopMetrics is a no-op implementation of MetricsRecorder.
 type noopMetrics struct{}
 
-func (noopMetrics) RecordClaimed(int)          {}
-func (noopMetrics) RecordRecovered(string, int) {}
-func (noopMetrics) RecordRetryReady(int)        {}
-func (noopMetrics) RecordRequeueReady(int)      {}
+func (noopMetrics) RecordClaimed(int)          {} // no-op: intentionally empty
+func (noopMetrics) RecordRecovered(string, int) {} // no-op: intentionally empty
+func (noopMetrics) RecordRetryReady(int)        {} // no-op: intentionally empty
+func (noopMetrics) RecordRequeueReady(int)      {} // no-op: intentionally empty
 
 // Config holds all configurable scheduler parameters.
 type Config struct {
