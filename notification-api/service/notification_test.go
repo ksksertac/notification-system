@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,12 +156,15 @@ func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.No
 }
 
 type mockPublisher struct {
-	published      []*domain.Notification
-	publishErr     error
+	mu              sync.Mutex
+	published       []*domain.Notification
+	publishErr      error
 	publishBatchErr error
 }
 
 func (m *mockPublisher) Publish(ctx context.Context, n *domain.Notification) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.publishErr != nil {
 		return m.publishErr
 	}
@@ -169,11 +173,19 @@ func (m *mockPublisher) Publish(ctx context.Context, n *domain.Notification) err
 }
 
 func (m *mockPublisher) PublishBatch(ctx context.Context, notifications []*domain.Notification) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.publishBatchErr != nil {
 		return m.publishBatchErr
 	}
 	m.published = append(m.published, notifications...)
 	return nil
+}
+
+func (m *mockPublisher) publishedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.published)
 }
 
 func TestCreate_ValidSMS(t *testing.T) {
@@ -1046,8 +1058,8 @@ func TestBuffer_FlushOnSizeThreshold(t *testing.T) {
 	// Wait for flush to happen (triggered by size threshold)
 	time.Sleep(50 * time.Millisecond)
 
-	if len(pub.published) != flushSize {
-		t.Errorf("expected %d published after size-triggered flush, got %d", flushSize, len(pub.published))
+	if got := pub.publishedCount(); got != flushSize {
+		t.Errorf("expected %d published after size-triggered flush, got %d", flushSize, got)
 	}
 	buf.Stop()
 }
