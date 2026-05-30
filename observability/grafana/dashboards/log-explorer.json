@@ -25,7 +25,7 @@
       {
         "name": "level",
         "type": "custom",
-        "query": "info,warn,error,debug",
+        "query": "INFO,WARN,ERROR,DEBUG",
         "multi": true,
         "includeAll": true,
         "current": {
@@ -33,10 +33,10 @@
           "value": "$__all"
         },
         "options": [
-          { "text": "info", "value": "info", "selected": false },
-          { "text": "warn", "value": "warn", "selected": false },
-          { "text": "error", "value": "error", "selected": false },
-          { "text": "debug", "value": "debug", "selected": false }
+          { "text": "INFO", "value": "INFO", "selected": false },
+          { "text": "WARN", "value": "WARN", "selected": false },
+          { "text": "ERROR", "value": "ERROR", "selected": false },
+          { "text": "DEBUG", "value": "DEBUG", "selected": false }
         ]
       },
       {
@@ -83,19 +83,19 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "error" },
+            "matcher": { "id": "byName", "options": "ERROR" },
             "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
           },
           {
-            "matcher": { "id": "byName", "options": "warn" },
+            "matcher": { "id": "byName", "options": "WARN" },
             "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
           },
           {
-            "matcher": { "id": "byName", "options": "info" },
+            "matcher": { "id": "byName", "options": "INFO" },
             "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
           },
           {
-            "matcher": { "id": "byName", "options": "debug" },
+            "matcher": { "id": "byName", "options": "DEBUG" },
             "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           }
         ]
@@ -108,7 +108,7 @@
       "datasource": "Loki",
       "targets": [
         {
-          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"error\" [$__range]))",
+          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"ERROR\" [$__range]))",
           "legendFormat": "errors"
         }
       ],
@@ -136,7 +136,7 @@
       "datasource": "Loki",
       "targets": [
         {
-          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"warn\" [$__range]))",
+          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"WARN\" [$__range]))",
           "legendFormat": "warnings"
         }
       ],
@@ -164,7 +164,7 @@
       "datasource": "Loki",
       "targets": [
         {
-          "expr": "sum(rate({container=~\"$container\"} | json | level=\"error\" [5m]))",
+          "expr": "sum(rate({container=~\"$container\"} | json | level=\"ERROR\" [5m]))",
           "legendFormat": "err/s"
         }
       ],
@@ -245,7 +245,7 @@
       "datasource": "Loki",
       "targets": [
         {
-          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"error\" [1m])) by (container)",
+          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"ERROR\" [1m])) by (container)",
           "legendFormat": "{{container}} errors"
         }
       ],
@@ -268,7 +268,7 @@
       "datasource": "Loki",
       "targets": [
         {
-          "expr": "topk(10, sum by (msg) (count_over_time({container=~\"$container\"} | json | level=\"error\" [$__range])))",
+          "expr": "topk(10, sum by (msg) (count_over_time({container=~\"$container\"} | json | level=\"ERROR\" [$__range])))",
           "legendFormat": "{{msg}}",
           "instant": true
         }
