@@ -16,13 +16,19 @@ scrape_configs:
       - targets: ["notification-api:8080"]
 
   - job_name: "notification-consumer"
-    static_configs:
-      - targets: ["notification-consumer:9090"]
+    dns_sd_configs:
+      - names: ["notification-consumer"]
+        type: A
+        port: 9090
 
   - job_name: "notification-scheduler"
-    static_configs:
-      - targets: ["notification-scheduler:9091"]
+    dns_sd_configs:
+      - names: ["notification-scheduler"]
+        type: A
+        port: 9091
 
   - job_name: "notification-dbwriter"
-    static_configs:
-      - targets: ["notification-dbwriter:9092"]
+    dns_sd_configs:
+      - names: ["notification-dbwriter"]
+        type: A
+        port: 9092
