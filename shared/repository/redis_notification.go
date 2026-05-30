@@ -1298,14 +1298,19 @@ type PersistEvent struct {
 	Notification *domain.Notification `json:"notification,omitempty"`
 	Extra        map[string]string    `json:"extra,omitempty"`
 	Timestamp    string               `json:"timestamp"`
+	Traceparent  string               `json:"traceparent,omitempty"`
+	Tracestate   string               `json:"tracestate,omitempty"`
 }
 
 func (r *redisNotificationRepo) publishPersistEvent(ctx context.Context, pipe redis.Pipeliner, action string, n *domain.Notification, extra map[string]string) {
+	carrier := tracing.InjectTraceContext(ctx)
 	evt := PersistEvent{
 		Action:       action,
 		Notification: n,
 		Extra:        extra,
 		Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+		Traceparent:  carrier["traceparent"],
+		Tracestate:   carrier["tracestate"],
 	}
 	data, err := json.Marshal(evt)
 	if err != nil {

@@ -6,11 +6,39 @@ datasources:
     access: proxy
     url: http://prometheus:9090
     isDefault: true
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: jaeger
 
   - name: Loki
     type: loki
     access: proxy
     url: http://loki:3100
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"correlation_id":"([a-f0-9-]+)"'
+          url: "$${__value.raw}"
+          datasourceUid: jaeger
+          urlDisplayLabel: "View Trace"
+      maxLines: 1000
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    uid: jaeger
+    url: http://jaeger:16686
+    jsonData:
+      tracesToLogs:
+        datasourceUid: loki
+        filterByTraceID: false
+        filterBySpanID: false
+        mapTagNamesEnabled: true
+        mappedTags:
+          - key: "correlation_id"
+            value: "correlation_id"
+        lokiSearch: true
 
   - name: Alertmanager
     type: alertmanager

@@ -196,10 +196,20 @@ func (wp *WorkerPool) pollStreams(ctx context.Context, consumerName string) bool
 }
 
 func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
+	if msg.Traceparent != "" {
+		carrier := tracing.MapCarrier{
+			"traceparent": msg.Traceparent,
+			"tracestate":  msg.Tracestate,
+		}
+		ctx = tracing.ExtractTraceContext(ctx, carrier)
+	}
 	ctx, span := tracing.StartSpan(ctx, "consumer.ProcessMessage")
 	defer span.End()
 	tracing.SetNotificationAttrs(span, msg.NotificationID.String(), string(msg.Channel), "")
 	tracing.SetAttr(span, "queue.stream", msg.StreamName)
+	if msg.CorrelationID != "" {
+		tracing.SetAttr(span, "correlation_id", msg.CorrelationID)
+	}
 
 	startTime := time.Now()
 	logger := wp.logger.With(

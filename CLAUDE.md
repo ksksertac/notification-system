@@ -35,6 +35,8 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **CB Re-enqueue Backoff (C1)**: Circuit breaker open path now uses exponential backoff (500ms→1s→2s→...→30s cap) based on `RequeueCount`, preventing re-enqueue storms. Rate-limiter path retains fixed 500ms delay.
 - **Provider 429 Retry-After (C5)**: Webhook provider now parses `Retry-After` header (seconds or HTTP-date format) on 429 responses. Consumer uses provider-specified delay instead of default exponential backoff when available.
 - **OTel Endpoint Fix (C4)**: Fixed double `http://` prefix in docker-compose OTLP endpoint values. `WithEndpoint()` expects `host:port` without scheme.
+- **End-to-End Trace Propagation**: W3C Trace Context (`traceparent`/`tracestate`) now propagated through Redis Stream messages and persist events. Consumer extracts trace context from queue messages so Jaeger shows a single trace spanning API→Queue→Consumer→Webhook→DBWriter. Webhook HTTP client wrapped with `otelhttp.NewTransport` for automatic span creation on outbound calls. `shared/tracing/propagation.go` provides `MapCarrier`, `InjectTraceContext`, `ExtractTraceContext` helpers.
+- **Observability Stack Enhancements**: Custom Loki config (TSDB v13, 7-day retention, embedded cache, ruler for log-based alerting), enhanced Promtail config (Docker stage, service labels, structured metadata, Promtail metrics), Jaeger datasource in Grafana with Loki↔Jaeger trace-log correlation via `correlation_id`, 7 log-based alert rules (HighErrorRate, CircuitBreakerOpen, DLQ, DB/Redis errors, NoLogs), enriched Log Explorer dashboard with stat panels, top errors table, and correlation ID filter.
 
 ## Key Commands Used
 
@@ -48,8 +50,8 @@ claude "move migrator from API to dbwriter"
 
 ## Testing Strategy
 
-- **Unit tests**: domain, handlers (sentinel errors), service, circuit breaker, retry, template (html/template + sync.Map cache)
-- **Integration tests**: Redis repository via miniredis (atomic Lua scripts, sorted set indexes, CAS, IncrementRetry)
+- **Unit tests**: domain, handlers (sentinel errors), service, circuit breaker, retry, template (html/template + sync.Map cache), tracing propagation (MapCarrier, inject/extract round-trip, linked spans), queue message parsing (traceparent/tracestate fields)
+- **Integration tests**: Redis repository via miniredis (atomic Lua scripts, sorted set indexes, CAS, IncrementRetry), dbwriter trace carrier extraction
 - **Race condition tests**: concurrent pod claim simulation, concurrent status CAS, idempotency under concurrency
 - **E2E tests (12 scenarios)**: real handlers, services, repositories, middleware wired against miniredis — no mocks. Tests: lifecycle, batch, scheduled, idempotency, rate limiting, race condition, cancel, CAS, getByID, getByBatchID, health, validation
 - **SonarCloud**: continuous quality gate on every PR (see `sonar-project.properties`)
@@ -69,6 +71,8 @@ claude "move migrator from API to dbwriter"
 - All background operations use `context.WithTimeout` (no unbounded contexts)
 - Stream messages ACK'd only after all side effects complete
 - Correlation ID propagated across services via `shared/tracing` context key and Redis Stream messages
+- W3C Trace Context (`traceparent`/`tracestate`) propagated through Redis Stream messages and persist events for end-to-end Jaeger traces
+- Webhook HTTP client instrumented with `otelhttp.NewTransport` for automatic outbound span creation
 - Re-enqueue via persistent `idx:requeue` ZSET (scheduler-driven, crash-safe)
 - Deficit round-robin scheduling for priority queues (prevents low-priority starvation)
 - Circuit breaker re-enqueue capped at `MaxRequeueCount` (50) to prevent infinite loops

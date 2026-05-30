@@ -152,6 +152,9 @@ func (w *Writer) flush(ctx context.Context, msgs []pendingMsg) error {
 		return nil
 	}
 
+	if first := w.firstTraceCarrier(msgs); first != nil {
+		ctx = tracing.ExtractTraceContext(ctx, first)
+	}
 	ctx, span := tracing.StartSpan(ctx, "dbwriter.Flush")
 	defer span.End()
 	tracing.SetIntAttr(span, "flush.message_count", len(msgs))
@@ -322,6 +325,18 @@ func (w *Writer) reclaimPending(ctx context.Context, consumerName string) {
 			return
 		}
 	}
+}
+
+func (w *Writer) firstTraceCarrier(msgs []pendingMsg) tracing.MapCarrier {
+	for _, m := range msgs {
+		if m.event != nil && m.event.Traceparent != "" {
+			return tracing.MapCarrier{
+				"traceparent": m.event.Traceparent,
+				"tracestate":  m.event.Tracestate,
+			}
+		}
+	}
+	return nil
 }
 
 func (w *Writer) ackMessages(ctx context.Context, msgs []pendingMsg) {

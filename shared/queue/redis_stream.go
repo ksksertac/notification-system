@@ -37,6 +37,10 @@ func (p *redisStreamPublisher) Publish(ctx context.Context, n *domain.Notificati
 	if cid := tracing.GetCorrelationID(ctx); cid != "" {
 		values["correlation_id"] = cid
 	}
+	carrier := tracing.InjectTraceContext(ctx)
+	for k, v := range carrier {
+		values[k] = v
+	}
 
 	_, err := p.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream,
@@ -56,6 +60,7 @@ func (p *redisStreamPublisher) PublishBatch(ctx context.Context, notifications [
 	pipe := p.client.Pipeline()
 
 	cid := tracing.GetCorrelationID(ctx)
+	carrier := tracing.InjectTraceContext(ctx)
 	for _, n := range notifications {
 		stream := StreamForPriority(n.Priority)
 		values := map[string]interface{}{
@@ -68,6 +73,9 @@ func (p *redisStreamPublisher) PublishBatch(ctx context.Context, notifications [
 		}
 		if cid != "" {
 			values["correlation_id"] = cid
+		}
+		for k, v := range carrier {
+			values[k] = v
 		}
 		pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: stream,

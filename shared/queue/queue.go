@@ -38,6 +38,8 @@ type Message struct {
 	Priority       domain.Priority
 	RetryCount     int
 	CorrelationID  string
+	Traceparent    string
+	Tracestate     string
 }
 
 type Publisher interface {
@@ -80,6 +82,8 @@ func ParseMessage(stream string, id string, values map[string]interface{}) (Mess
 	}
 
 	correlationID, _ := values["correlation_id"].(string)
+	traceparent, _ := values["traceparent"].(string)
+	tracestate, _ := values["tracestate"].(string)
 
 	return Message{
 		ID:             id,
@@ -91,5 +95,7 @@ func ParseMessage(stream string, id string, values map[string]interface{}) (Mess
 		Priority:       priority,
 		RetryCount:     retryCount,
 		CorrelationID:  correlationID,
+		Traceparent:    traceparent,
+		Tracestate:     tracestate,
 	}, nil
 }

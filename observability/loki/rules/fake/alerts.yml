@@ -1,0 +1,72 @@
+groups:
+  - name: notification-log-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate({container=~".*notification.*"} | json | level="error" [5m])) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate in notification services"
+          description: "Error rate exceeded 0.5/s for more than 2 minutes"
+
+      - alert: CircuitBreakerOpenLogged
+        expr: |
+          count_over_time({container=~".*notification-consumer.*"} |= "circuit breaker" |= "open" [5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker opened (detected from logs)"
+          description: "Consumer logs indicate circuit breaker is in open state"
+
+      - alert: DLQMovement
+        expr: |
+          count_over_time({container=~".*notification.*"} |= "moved to DLQ" [5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifications moving to DLQ"
+          description: "More than 5 notifications moved to DLQ in the last 5 minutes"
+
+      - alert: DatabaseConnectionErrors
+        expr: |
+          count_over_time({container=~".*notification-dbwriter.*"} |= "connection refused" [5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection errors in dbwriter"
+          description: "DBWriter is logging database connection failures"
+
+      - alert: RedisConnectionErrors
+        expr: |
+          sum(count_over_time({container=~".*notification.*"} |= "redis" |~ "connection refused|READONLY|CLUSTERDOWN" [5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis connection errors detected"
+          description: "Services are logging Redis connectivity issues"
+
+      - alert: HighRetryRate
+        expr: |
+          sum(rate({container=~".*notification-consumer.*"} | json | level="warn" |= "retry" [5m])) > 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High notification retry rate"
+          description: "Consumer retry rate exceeded 1/s for more than 3 minutes"
+
+      - alert: NoLogsFromService
+        expr: |
+          absent_over_time({container=~".*notification-api.*"} [10m])
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No logs from notification-api"
+          description: "notification-api has not produced any logs for 10 minutes — possible crash or hang"

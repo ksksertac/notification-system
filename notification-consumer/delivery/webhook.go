@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type webhookProvider struct {
@@ -21,11 +23,11 @@ func NewWebhookProvider(url string, timeout time.Duration) Provider {
 		url: url,
 		client: &http.Client{
 			Timeout: timeout,
-			Transport: &http.Transport{
+			Transport: otelhttp.NewTransport(&http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 100,
 				IdleConnTimeout:     90 * time.Second,
-			},
+			}),
 		},
 	}
 }

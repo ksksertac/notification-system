@@ -33,60 +33,37 @@
           "value": "$__all"
         },
         "options": [
-          {
-            "text": "info",
-            "value": "info",
-            "selected": false
-          },
-          {
-            "text": "warn",
-            "value": "warn",
-            "selected": false
-          },
-          {
-            "text": "error",
-            "value": "error",
-            "selected": false
-          },
-          {
-            "text": "debug",
-            "value": "debug",
-            "selected": false
-          }
+          { "text": "info", "value": "info", "selected": false },
+          { "text": "warn", "value": "warn", "selected": false },
+          { "text": "error", "value": "error", "selected": false },
+          { "text": "debug", "value": "debug", "selected": false }
         ]
       },
       {
         "name": "search",
         "type": "textbox",
-        "current": {
-          "text": "",
-          "value": ""
-        },
+        "current": { "text": "", "value": "" },
         "label": "Search Text"
+      },
+      {
+        "name": "correlation_id",
+        "type": "textbox",
+        "current": { "text": "", "value": "" },
+        "label": "Correlation ID"
       }
     ]
   },
   "panels": [
     {
-      "title": "Log Volume",
+      "title": "Overview",
       "type": "row",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false
     },
     {
       "title": "Log Volume by Level",
       "type": "timeseries",
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 1
-      },
+      "gridPos": { "h": 6, "w": 16, "x": 0, "y": 1 },
       "datasource": "Loki",
       "targets": [
         {
@@ -101,84 +78,141 @@
             "lineWidth": 1,
             "drawStyle": "bars",
             "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
+            "stacking": { "mode": "normal" }
           }
         },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "error"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "error" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "warn"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "yellow",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "warn" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "info"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "info" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "debug"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "debug" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           }
         ]
       }
     },
     {
+      "title": "Error / Warn Ratio",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 1 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"error\" [$__range]))",
+          "legendFormat": "errors"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "displayName": "Errors"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["sum"] }
+      }
+    },
+    {
+      "title": "Warnings",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 1 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "sum(count_over_time({container=~\"$container\"} | json | level=\"warn\" [$__range]))",
+          "legendFormat": "warnings"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "orange", "value": 100 }
+            ]
+          },
+          "displayName": "Warnings"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["sum"] }
+      }
+    },
+    {
+      "title": "Error Rate / sec",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 4 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "sum(rate({container=~\"$container\"} | json | level=\"error\" [5m]))",
+          "legendFormat": "err/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.5 }
+            ]
+          },
+          "displayName": "Error Rate"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Total Log Lines",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 4 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "sum(count_over_time({container=~\"$container\"} [$__range]))",
+          "legendFormat": "total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "displayName": "Total Logs",
+          "thresholds": {
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["sum"] }
+      }
+    },
+    {
       "title": "Log Volume by Service",
       "type": "timeseries",
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 7
-      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 7 },
       "datasource": "Loki",
       "targets": [
         {
@@ -193,33 +227,21 @@
             "lineWidth": 1,
             "drawStyle": "bars",
             "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
+            "stacking": { "mode": "normal" }
           }
         }
       }
     },
     {
-      "title": "Error Logs",
+      "title": "Error Analysis",
       "type": "row",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 13
-      },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
       "collapsed": false
     },
     {
       "title": "Error Rate by Service",
       "type": "timeseries",
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 14
-      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 14 },
       "datasource": "Loki",
       "targets": [
         {
@@ -235,32 +257,68 @@
             "drawStyle": "line",
             "showPoints": "never"
           },
-          "color": {
-            "mode": "palette-classic"
-          }
+          "color": { "mode": "palette-classic" }
         }
       }
     },
     {
-      "title": "Log Streams",
+      "title": "Top Error Messages",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 14 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "topk(10, sum by (msg) (count_over_time({container=~\"$container\"} | json | level=\"error\" [$__range])))",
+          "legendFormat": "{{msg}}",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "sortBy",
+          "options": { "sort": [{ "field": "Value", "desc": true }] }
+        }
+      ]
+    },
+    {
+      "title": "Trace Correlation",
       "type": "row",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 20
-      },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "collapsed": false
+    },
+    {
+      "title": "Logs by Correlation ID",
+      "description": "Enter a correlation_id in the template variable above to filter logs for a specific request trace",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 21 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "{container=~\"$container\"} | json | correlation_id=~\"$correlation_id\" | level=~\"$level\" |~ \"$search\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Ascending",
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "title": "Service Logs",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
       "collapsed": false
     },
     {
       "title": "notification-api Logs",
       "type": "logs",
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 21
-      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 32 },
       "datasource": "Loki",
       "targets": [
         {
@@ -282,12 +340,7 @@
     {
       "title": "notification-consumer Logs",
       "type": "logs",
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 33
-      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 42 },
       "datasource": "Loki",
       "targets": [
         {
@@ -309,12 +362,7 @@
     {
       "title": "notification-scheduler Logs",
       "type": "logs",
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 45
-      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 52 },
       "datasource": "Loki",
       "targets": [
         {
@@ -336,12 +384,7 @@
     {
       "title": "notification-dbwriter Logs",
       "type": "logs",
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 57
-      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 62 },
       "datasource": "Loki",
       "targets": [
         {

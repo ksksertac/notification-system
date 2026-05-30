@@ -186,8 +186,12 @@ services:
     ports:
       - "3100:3100"
     volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml
+      - ./observability/loki/rules:/loki/rules
       - loki_data:/loki
-    command: -config.file=/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/loki-config.yml
+    depends_on:
+      - alertmanager
 
   promtail:
     image: grafana/promtail:2.9.7
@@ -214,6 +218,7 @@ services:
     depends_on:
       - prometheus
       - loki
+      - jaeger
 
 volumes:
   postgres_data:

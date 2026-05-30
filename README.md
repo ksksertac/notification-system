@@ -72,7 +72,7 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 │  Prometheus ──→ Grafana Dashboards (metrics, queue depth, latency)           │
 │  Promtail ──→ Loki ──→ Grafana Logs (structured JSON, correlation ID)       │
 │  Alertmanager ──→ Slack/Teams (critical alerts: failure rate, CB, downtime)  │
-│  Jaeger ──→ Distributed Tracing (correlation ID propagation across services)│
+│  Jaeger ──→ Distributed Tracing (W3C traceparent propagation across services)│
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -91,6 +91,7 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buff
 | **Provider Response Limit** | `io.LimitReader` caps provider response body at 1 MB — prevents memory exhaustion from malicious/broken providers |
 | **Persistent Re-enqueue** | CB/rate-limit deferred notifications stored in persistent `idx:requeue` ZSET — scheduler polls every 2s, crash-safe, no goroutine leaks |
 | **Requeue Count Limit** | Circuit breaker re-enqueue capped at 50 attempts per notification — moves to DLQ on exceeded limit, preventing infinite re-enqueue loops |
+| **Distributed Tracing** | W3C Trace Context (`traceparent`/`tracestate`) propagated through Redis Streams and persist events; `otelhttp.NewTransport` on webhook client for automatic span instrumentation; Loki↔Jaeger correlation via `correlation_id` |
 | **Prometheus Isolation** | Custom registry per service — no global metric conflicts between instances |
 
 ## Services

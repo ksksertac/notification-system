@@ -180,7 +180,7 @@ All packages with business logic target **90%+ coverage**:
 | `shared/repository` | 97.7% | miniredis (Redis Lua scripts, CAS, atomic indexes) + sqlmock (PostgreSQL) |
 | `notification-api/handler` | 100% | httptest + mock service, sentinel error classification |
 | `notification-api/service` | 97.8% | Mock repository + mock publisher, sentinel errors (ErrValidation, ErrNotFound, etc.) |
-| `notification-consumer/delivery` | 95.2% | miniredis (rate limiter, CB Redis-backed with 500ms timeouts) + httptest (webhook) |
+| `notification-consumer/delivery` | 95.2% | miniredis (rate limiter, CB Redis-backed with 500ms timeouts) + httptest (webhook, otelhttp transport) |
 | `notification-consumer/template` | 92.3% | Pure unit tests (html/template with sync.Map cache) |
 | `notification-consumer/worker` | 99.2% | Full mock stack — ack-after-side-effects, CAS validation, reEnqueue WaitGroup tracking |
 | `notification-scheduler/scheduler` | 97.4% | Mock repo + mock publisher, configurable thresholds, MetricsRecorder interface |
@@ -249,6 +249,19 @@ go tool cover -func=coverage.out | grep total
 | Consumer Group | Acknowledges only after successful flush (flush returns error), replays on failure |
 | Ordering | Final state is correct regardless of event arrival order |
 | Error Handling | `readBatch()` logs real errors, `flushUpdates` accepts and uses context |
+| Trace Context | `firstTraceCarrier` extracts trace from pending msgs (nil events, empty, valid traceparent) |
+
+### Tracing & Propagation
+
+| Component | What We Test |
+|-----------|-------------|
+| MapCarrier | Get/Set/Keys for W3C trace context key-value storage |
+| InjectTraceContext | Injects span context into MapCarrier, produces valid `traceparent` header |
+| ExtractTraceContext | Extracts span context from carrier, preserves TraceID across inject→extract round-trip |
+| StartLinkedSpan | Creates linked span sharing TraceID with remote context |
+| SpanContextFromCarrier | Parses W3C traceparent string back to valid span context |
+| Queue ParseMessage | Traceparent/Tracestate fields parsed from Redis Stream values |
+| DBWriter firstTraceCarrier | Selects first trace-bearing event from pending batch, skips nil and empty events |
 
 ---
 

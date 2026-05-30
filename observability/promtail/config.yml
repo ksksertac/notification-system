@@ -6,23 +6,85 @@ positions:
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 1048576
+    tenant_id: fake
 
 scrape_configs:
   - job_name: docker
     docker_sd_configs:
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project"]
     relabel_configs:
       - source_labels: ["__meta_docker_container_name"]
+        regex: "/?(.*)"
         target_label: "container"
+      - source_labels: ["__meta_docker_container_name"]
+        regex: ".*notification-(api|consumer|scheduler|dbwriter).*"
+        target_label: "service"
+        replacement: "notification-${1}"
       - source_labels: ["__meta_docker_container_log_stream"]
         target_label: "stream"
+      - source_labels: ["__meta_docker_port_private"]
+        target_label: "port"
     pipeline_stages:
+      - docker: {}
+
       - json:
           expressions:
             level: level
             msg: msg
             correlation_id: correlation_id
+            error: error
+            duration: duration
+            status_code: status_code
+            method: method
+            path: path
+            notification_id: notification_id
+            batch_id: batch_id
+
       - labels:
           level:
+          service:
           correlation_id:
+
+      - structured_metadata:
+          notification_id:
+          batch_id:
+          error:
+          status_code:
+          method:
+          path:
+          duration:
+
+      - match:
+          selector: '{level="error"}'
+          stages:
+            - metrics:
+                log_errors_total:
+                  type: Counter
+                  description: "Total error log lines"
+                  source: level
+                  config:
+                    action: inc
+
+      - match:
+          selector: '{level="warn"}'
+          stages:
+            - metrics:
+                log_warnings_total:
+                  type: Counter
+                  description: "Total warning log lines"
+                  source: level
+                  config:
+                    action: inc
+
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+            - "2006-01-02T15:04:05Z07:00"

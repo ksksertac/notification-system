@@ -826,6 +826,69 @@ func TestWriter_MixedEventTypes(t *testing.T) {
 	}
 }
 
+func TestWriter_FirstTraceCarrier(t *testing.T) {
+	_, client := setupMiniredis(t)
+	repo := &mockRepo{}
+	w := New(client, repo, 10, 50*time.Millisecond, testLogger())
+
+	t.Run("returns nil for empty msgs", func(t *testing.T) {
+		carrier := w.firstTraceCarrier(nil)
+		if carrier != nil {
+			t.Error("expected nil carrier for empty msgs")
+		}
+	})
+
+	t.Run("returns nil when no trace context", func(t *testing.T) {
+		msgs := []pendingMsg{
+			{streamID: "1-0", event: &repository.PersistEvent{Action: "create", Timestamp: "now"}},
+		}
+		carrier := w.firstTraceCarrier(msgs)
+		if carrier != nil {
+			t.Error("expected nil carrier when no traceparent")
+		}
+	})
+
+	t.Run("returns carrier from first event with traceparent", func(t *testing.T) {
+		msgs := []pendingMsg{
+			{streamID: "1-0", event: &repository.PersistEvent{Action: "create", Timestamp: "now"}},
+			{streamID: "2-0", event: &repository.PersistEvent{
+				Action:      "update_status",
+				Timestamp:   "now",
+				Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+				Tracestate:  "vendor=val",
+			}},
+		}
+		carrier := w.firstTraceCarrier(msgs)
+		if carrier == nil {
+			t.Fatal("expected non-nil carrier")
+		}
+		if carrier["traceparent"] != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" {
+			t.Errorf("traceparent = %q, want W3C value", carrier["traceparent"])
+		}
+		if carrier["tracestate"] != "vendor=val" {
+			t.Errorf("tracestate = %q, want vendor=val", carrier["tracestate"])
+		}
+	})
+
+	t.Run("skips nil events", func(t *testing.T) {
+		msgs := []pendingMsg{
+			{streamID: "1-0", event: nil},
+			{streamID: "2-0", event: &repository.PersistEvent{
+				Action:      "create",
+				Timestamp:   "now",
+				Traceparent: "00-abc-def-01",
+			}},
+		}
+		carrier := w.firstTraceCarrier(msgs)
+		if carrier == nil {
+			t.Fatal("expected non-nil carrier")
+		}
+		if carrier["traceparent"] != "00-abc-def-01" {
+			t.Errorf("traceparent = %q, want 00-abc-def-01", carrier["traceparent"])
+		}
+	})
+}
+
 func countCreates(repo *mockRepo) int {
 	total := 0
 	for _, batch := range repo.getCreateBatchCalls() {
