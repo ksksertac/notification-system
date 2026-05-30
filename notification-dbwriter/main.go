@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/notification-dbwriter/migrator"
 	"github.com/sertacyildirim/notification-system/notification-dbwriter/writer"
@@ -85,7 +87,12 @@ func run() error {
 	w.StartCleanup(writerCtx)
 	logger.Info("dbwriter running", "batch_size", batchSize, "flush_interval", flushInterval, "hot_window", "1h")
 
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(prometheus.NewGoCollector())
+	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+
 	healthMux := http.NewServeMux()
+	healthMux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	healthMux.HandleFunc("/health", func(resp http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
