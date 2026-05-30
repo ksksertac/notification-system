@@ -95,7 +95,7 @@ type mockProvider struct {
 	sendFn func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error)
 }
 
-func (m *mockProvider) Send(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+func (m *mockProvider) Send(ctx context.Context, notificationID, recipient, channel, content string) (*delivery.SendResult, error) {
 	if m.sendFn != nil {
 		return m.sendFn(ctx, recipient, channel, content)
 	}

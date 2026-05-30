@@ -33,9 +33,10 @@ func NewWebhookProvider(url string, timeout time.Duration) Provider {
 }
 
 type webhookRequest struct {
-	To      string `json:"to"`
-	Channel string `json:"channel"`
-	Content string `json:"content"`
+	NotificationID string `json:"notification_id"`
+	To             string `json:"to"`
+	Channel        string `json:"channel"`
+	Content        string `json:"content"`
 }
 
 type webhookResponse struct {
@@ -44,11 +45,12 @@ type webhookResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
-func (p *webhookProvider) Send(ctx context.Context, recipient string, channel string, content string) (*SendResult, error) {
+func (p *webhookProvider) Send(ctx context.Context, notificationID string, recipient string, channel string, content string) (*SendResult, error) {
 	body, err := json.Marshal(webhookRequest{
-		To:      recipient,
-		Channel: channel,
-		Content: content,
+		NotificationID: notificationID,
+		To:             recipient,
+		Channel:        channel,
+		Content:        content,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)

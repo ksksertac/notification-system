@@ -7,9 +7,9 @@ Scalable, event-driven notification system built with Go. Processes and delivers
 ```
                            ┌──────────────────────────────────────────────────┐
                            │             notification-api                     │
-Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Write Buffer             │
+Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Immediate HSET           │
                            │              ↓                                  │
-                           │  Batch HSET to Redis (500 items)                │
+                           │  Single HSET to Redis (crash-safe per request)  │
                            │  + Index updates (status, channel, created_at)  │
                            │              ↓                                  │
                            │  Optimistic Publish (XADD to Redis Stream)      │
@@ -203,13 +203,13 @@ Load test → API receives burst traffic
 | Autoscaler | None | KEDA (redis-streams + cpu triggers) |
 | Production-like | No | Yes — same manifests work in cloud K8s |
 
-## Safety Net — Self-Healing Recovery
+## Recovery Layers
 
-Every notification state has an automatic recovery path. If any component crashes or a delivery fails, the system self-heals without manual intervention:
+Every notification state has an automatic recovery path. If any component crashes or a delivery fails, the system recovers without manual intervention:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     9-Layer Safety Net                              │
+│                     Recovery Mechanisms                              │
 │                                                                     │
 │  Layer 1: Rate Limit Re-enqueue (500ms)                            │
 │    └─ Rate limited? → re-publish to stream after 500ms             │
@@ -242,7 +242,9 @@ Every notification state has an automatic recovery path. If any component crashe
 
 ## Data Consistency & Reliability
 
-The system uses an **optimistic publish pattern** (outbox-like) to guarantee zero message loss, even during pod crashes or Redis downtime. Redis is the primary data store — all hot-path reads and writes go through Redis. PostgreSQL serves as cold storage for reporting and analytics, fed asynchronously via the `persist:queue` stream. A **tiered read** pattern ensures the API reads from Redis for recent data (last 1 hour) and falls back to PostgreSQL for older data.
+The system uses an **optimistic publish pattern** (outbox-like) to guarantee zero message loss, even during pod crashes or Redis downtime. Every notification is persisted to Redis immediately on submission — before the client receives a 200 OK response — ensuring crash safety. Stream publish is batched asynchronously; if the pod crashes before publish, the scheduler's orphaned-pending recovery picks up the notification within ~30 seconds. Redis is the primary data store — all hot-path reads and writes go through Redis. PostgreSQL serves as cold storage for reporting and analytics, fed asynchronously via the `persist:queue` stream. A **tiered read** pattern ensures the API reads from Redis for recent data (last 1 hour) and falls back to PostgreSQL for older data.
+
+**Delivery guarantee:** The system provides **at-least-once delivery** to external providers. Duplicate delivery is possible if a consumer pod crashes after a successful provider call but before the stream ACK. The webhook request includes a `notification_id` field for provider-side deduplication. See [DELIVERY.md](DELIVERY.md) for details.
 
 ### Atomic Lua Scripts
 
@@ -265,10 +267,11 @@ This eliminates TOCTOU (time-of-check-time-of-use) race conditions that existed 
 POST /api/v1/notifications
          │
          ▼
- ┌─ Write Buffer collects requests (up to 500 or 50ms)
+ ┌─ Immediate HSET to Redis (notification:{id} hash + index updates)
+ │  └─ crash-safe: notification is durable before client gets 200 OK
  │         │
  │         ▼
- │  Batch HSET to Redis (notification:{id} hashes + index updates)
+ │  Write Buffer batches stream publish (up to 500 or 50ms)
  │         │
  │         ▼
  │  Update status: pending → queued (before publish)
@@ -327,12 +330,12 @@ Redis provides sub-millisecond latency for all hot-path operations (writes, stat
 
 ## High Throughput & Backpressure
 
-The system handles burst traffic (1M+ notifications) through layered protection:
+The system handles burst traffic through layered protection:
 
 ```
-Client (1M req) → Rate Limiter (1000/s) → Write Buffer (batch 500)
+Client (burst) → Rate Limiter (1000/s) → Immediate HSET (crash-safe)
                        ↓                         ↓
-                 excess → 429             500 HSET → 1 pipeline HSET
+                 excess → 429             Write Buffer batches XADD
                                                  ↓
                                             Redis (hot store)
                                                  ↓
@@ -348,7 +351,7 @@ Client (1M req) → Rate Limiter (1000/s) → Write Buffer (batch 500)
 | Layer | What it does | Where |
 |-------|-------------|-------|
 | **API Rate Limiter** | Global Redis sliding window (Lua), 1000 req/s across all pods — excess gets `429 Too Many Requests` | Middleware |
-| **Write Buffer** | Collects single creates, flushes as batch HSET pipeline every 50ms or 500 items — reduces Redis round trips ~500x | Service |
+| **Write Buffer** | Each notification is persisted to Redis immediately (crash-safe). Stream publish is batched every 50ms or 500 items — reduces Redis stream round trips. Requests with `Idempotency-Key` bypass the buffer (need immediate visibility for duplicate detection) | Service |
 | **PgBouncer** | Connection pooler — used exclusively by notification-dbwriter to multiplex connections to PostgreSQL (transaction mode) | Infrastructure |
 | **Connection Pool** | Per-dbwriter-pod max 25 connections, prevents single pod from exhausting DB | Go runtime |
 | **Redis Sorted Set Indexes** | Scheduler and consumer queries use targeted sorted set lookups, O(log N) even on millions of entries | Redis |
@@ -357,19 +360,22 @@ Client (1M req) → Rate Limiter (1000/s) → Write Buffer (batch 500)
 
 PgBouncer is shared by `notification-dbwriter` (writes) and `notification-api` (read-only fallback for cold data). Without PgBouncer: multiple pods each opening connections would exhaust PostgreSQL's `max_connections`. With PgBouncer: all connections are multiplexed through a small pool of real PostgreSQL connections in transaction mode. Consumer and scheduler services do not connect to PostgreSQL at all — they only use Redis.
 
-### Write Buffer — Batch Coalescing
+### Write Buffer — Crash-Safe with Batched Publish
 
-Individual `HSET` commands are the biggest Redis bottleneck under high load. The write buffer solves this:
+Each notification is persisted to Redis immediately via individual HSET (crash-safe — the notification is durable before the client gets 200 OK). The write buffer then batches the stream publish (XADD) for throughput:
 
 ```
-Without buffer:  1000 requests → 1000 HSET commands → 1000 Redis round trips
-With buffer:     1000 requests → 2 pipeline HSETs (500 each) → 2 Redis round trips
+Without buffer:  1000 requests → 1000 HSET + 1000 XADD → 2000 Redis round trips
+With buffer:     1000 requests → 1000 HSET (immediate) + 2 pipeline XADD → 1002 Redis round trips
 ```
 
-- `CreateBatch` pre-loads the Lua script SHA and runs up to 50 concurrent goroutines — 1000-item batch completes in ~20ms instead of ~500ms sequential
+- Each `Submit()` calls `repo.Create()` immediately — notification is in Redis before client gets a response
+- Stream publish is batched on **size threshold** (500 items) or **time threshold** (50ms) — whichever comes first
+- If pod crashes before stream publish, notification stays `pending` — scheduler recovers within ~30 seconds
+- Requests with `Idempotency-Key` bypass the buffer and publish immediately (need instant visibility for duplicate detection)
 - Requests with `Idempotency-Key` check `idx:idempotency:{key}` (String with 24h TTL) for duplicate detection (supported on both single and batch create)
-- Buffer flushes on **size threshold** (500 items) or **time threshold** (50ms) — whichever comes first
-- Each waiting handler gets its result via a dedicated channel — no polling
+
+**Trade-off:** Idempotent requests bypass the buffer for correctness (atomic dedup check), so they do not benefit from batched stream publish. In practice, burst traffic that uses idempotency keys gets individual stream publishes rather than batched ones.
 
 ## Redis Key Schema
 
@@ -461,11 +467,11 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **Hybrid Redis-First with Hot/Cold Tiering**: Redis keeps last 1 hour of data (hot), PostgreSQL keeps full history (cold). API reads use tiered fallback — Redis first, PostgreSQL for older data. dbwriter evicts Redis entries older than 1 hour to keep RAM bounded
 - **Redis Streams as queue**: 3 priority streams (high/normal/low), O(1) enqueue, native consumer groups, built-in crash recovery (XPENDING + XCLAIM)
 - **Optimistic Publish**: Redis is source of truth for hot data, stream publish is best-effort — scheduler catches failures
-- **Write Buffer**: batch coalescing turns 500 individual HSETs into 1 pipeline HSET (~500x throughput)
+- **Write Buffer**: crash-safe immediate HSET per request, with batched stream publish (XADD) every 50ms or 500 items. Idempotent requests bypass the buffer for atomic dedup
 - **PgBouncer**: connection multiplexing shared by dbwriter (writes) and API (cold read fallback) to PostgreSQL
 - **Race-to-Claim**: scheduler, consumer, dbwriter all scale via atomic Redis operations — no ring hash, no partition assignment, no rebalance. Lua scripts guarantee atomicity
 - **Redis Lua Scripts**: server-side atomic operations for CAS (compare-and-swap), scheduled claim, recovery, rate limiting — same guarantee as `SELECT FOR UPDATE` at Redis speed
-- **Multi-Layer Safety Net**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
+- **Multi-Layer Recovery**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
 - **Global Rate Limiting**: Redis sliding window (1000 req/s shared across all pods) protects the system from traffic bursts
 - **Deficit Round-Robin Scheduling**: prevents priority starvation with fair weighted scheduling (high:10, normal:5, low:2). Each stream accumulates deficit credits; the highest-deficit stream is served first, ensuring all priorities get throughput proportional to their weight
 - **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts. CB-open re-enqueue uses exponential backoff (500ms→30s cap) based on requeue count; rate-limit re-enqueue uses fixed 500ms. Re-enqueue capped at 50 attempts — exceeding the limit moves to DLQ instead of infinite loops
@@ -521,7 +527,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 | Structured logging + correlation IDs | ✅ | `slog` JSON, `X-Correlation-ID` propagated end-to-end |
 | Health check endpoint | ✅ | `/health` on every service |
 | **Bonus Features** | | |
-| Failure handling | ✅ | 9-layer safety net, persistent requeue, stuck recovery |
+| Failure handling | ✅ | 9-layer recovery, persistent requeue, stuck recovery |
 | Scheduled notifications | ✅ | `scheduled_at` field, scheduler polls `schedule:pending` ZSET |
 | Template system | ✅ | `html/template` with sync.Map cache, XSS-safe |
 | WebSocket updates | ✅ | Hub pattern, heartbeat, origin validation, max 1000 connections |

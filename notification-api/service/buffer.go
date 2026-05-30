@@ -11,16 +11,11 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/repository"
 )
 
-type writeRequest struct {
-	notification *domain.Notification
-	resultCh     chan error
-}
-
 type WriteBuffer struct {
 	repo          repository.NotificationRepository
 	publisher     queue.Publisher
 	logger        *slog.Logger
-	incoming      chan *writeRequest
+	incoming      chan *domain.Notification
 	flushSize     int
 	flushInterval time.Duration
 	wg            sync.WaitGroup
@@ -46,7 +41,7 @@ func NewWriteBuffer(
 		repo:          repo,
 		publisher:     publisher,
 		logger:        logger,
-		incoming:      make(chan *writeRequest, flushSize*2),
+		incoming:      make(chan *domain.Notification, flushSize*2),
 		flushSize:     flushSize,
 		flushInterval: flushInterval,
 	}
@@ -55,24 +50,30 @@ func NewWriteBuffer(
 	return wb
 }
 
+// Submit persists the notification to Redis immediately (crash-safe), then
+// queues it for batched stream publish. The client gets a response as soon as
+// the Redis write succeeds — if the pod crashes before stream publish, the
+// scheduler's orphaned-pending recovery picks it up within ~30s.
 func (wb *WriteBuffer) Submit(ctx context.Context, n *domain.Notification) error {
-	req := &writeRequest{
-		notification: n,
-		resultCh:     make(chan error, 1),
-	}
-
 	select {
-	case wb.incoming <- req:
 	case <-ctx.Done():
 		return ctx.Err()
+	default:
 	}
 
-	select {
-	case err := <-req.resultCh:
+	if err := wb.repo.Create(ctx, n); err != nil {
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+
+	select {
+	case wb.incoming <- n:
+	default:
+		wb.logger.Warn("write buffer channel full, scheduler will recover",
+			"notification_id", n.ID,
+		)
+	}
+
+	return nil
 }
 
 func (wb *WriteBuffer) Stop() {
@@ -83,33 +84,36 @@ func (wb *WriteBuffer) Stop() {
 func (wb *WriteBuffer) run() {
 	defer wb.wg.Done()
 
-	batch := make([]*writeRequest, 0, wb.flushSize)
+	batch := make([]*domain.Notification, 0, wb.flushSize)
 	ticker := time.NewTicker(wb.flushInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case req, ok := <-wb.incoming:
+		case n, ok := <-wb.incoming:
 			if !ok {
 				wb.flush(batch)
 				return
 			}
-			batch = append(batch, req)
+			batch = append(batch, n)
 			if len(batch) >= wb.flushSize {
 				wb.flush(batch)
-				batch = make([]*writeRequest, 0, wb.flushSize)
+				batch = make([]*domain.Notification, 0, wb.flushSize)
 				ticker.Reset(wb.flushInterval)
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				wb.flush(batch)
-				batch = make([]*writeRequest, 0, wb.flushSize)
+				batch = make([]*domain.Notification, 0, wb.flushSize)
 			}
 		}
 	}
 }
 
-func (wb *WriteBuffer) flush(batch []*writeRequest) {
+// flush only handles batched stream publish — the Redis HSET already happened
+// in Submit. If publish fails, notifications stay "pending" and the scheduler
+// recovers them.
+func (wb *WriteBuffer) flush(batch []*domain.Notification) {
 	if len(batch) == 0 {
 		return
 	}
@@ -117,25 +121,8 @@ func (wb *WriteBuffer) flush(batch []*writeRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	notifications := make([]*domain.Notification, len(batch))
-	for i, req := range batch {
-		notifications[i] = req.notification
-	}
-
-	err := wb.repo.CreateBatch(ctx, notifications)
-
-	if err != nil {
-		wb.logger.Error("write buffer flush failed", "count", len(batch), "error", err)
-		for _, req := range batch {
-			req.resultCh <- err
-		}
-		return
-	}
-
-	wb.logger.Debug("write buffer flushed", "count", len(batch))
-
 	var immediate []*domain.Notification
-	for _, n := range notifications {
+	for _, n := range batch {
 		if n.ScheduledAt == nil {
 			immediate = append(immediate, n)
 		}
@@ -158,7 +145,5 @@ func (wb *WriteBuffer) flush(batch []*writeRequest) {
 		}
 	}
 
-	for _, req := range batch {
-		req.resultCh <- nil
-	}
+	wb.logger.Debug("write buffer flushed", "count", len(batch))
 }

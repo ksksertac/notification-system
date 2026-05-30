@@ -291,7 +291,7 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 
 	sendCtx, sendSpan := tracing.StartSpan(ctx, "provider.Send")
 	tracing.SetAttr(sendSpan, "provider.channel", string(msg.Channel))
-	result, sendErr := wp.provider.Send(sendCtx, msg.Recipient, string(msg.Channel), content)
+	result, sendErr := wp.provider.Send(sendCtx, msg.NotificationID.String(), msg.Recipient, string(msg.Channel), content)
 	if sendErr != nil {
 		tracing.RecordError(sendSpan, sendErr)
 	}

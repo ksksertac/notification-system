@@ -29,6 +29,9 @@ func TestWebhookSend_Success(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
+		if req.NotificationID != "notif-1" {
+			t.Errorf("expected NotificationID=notif-1, got %s", req.NotificationID)
+		}
 		if req.To != "user@example.com" {
 			t.Errorf("expected To=user@example.com, got %s", req.To)
 		}
@@ -51,7 +54,7 @@ func TestWebhookSend_Success(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "email", "Hello World")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "email", "Hello World")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -71,7 +74,7 @@ func TestWebhookSend_ServerError500(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "email", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "email", "Hello")
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -91,7 +94,7 @@ func TestWebhookSend_RateLimit429(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "sms", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "sms", "Hello")
 	if err == nil {
 		t.Fatal("expected error for 429 response")
 	}
@@ -112,7 +115,7 @@ func TestWebhookSend_429WithRetryAfterSeconds(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "sms", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "sms", "Hello")
 	if err == nil {
 		t.Fatal("expected error for 429 response")
 	}
@@ -131,7 +134,7 @@ func TestWebhookSend_429WithRetryAfterHTTPDate(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "sms", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "sms", "Hello")
 	if err == nil {
 		t.Fatal("expected error for 429 response")
 	}
@@ -170,7 +173,7 @@ func TestWebhookSend_ClientError400(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "push", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "push", "Hello")
 	if err == nil {
 		t.Fatal("expected error for 400 response")
 	}
@@ -191,7 +194,7 @@ func TestWebhookSend_InvalidJSONResponse(t *testing.T) {
 	defer server.Close()
 
 	provider := NewWebhookProvider(server.URL, 5*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "email", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "email", "Hello")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
 	}
@@ -215,7 +218,7 @@ func TestWebhookSend_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	result, err := provider.Send(ctx, "user@example.com", "email", "Hello")
+	result, err := provider.Send(ctx, "notif-1", "user@example.com", "email", "Hello")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -230,7 +233,7 @@ func TestWebhookSend_ContextCancellation(t *testing.T) {
 func TestWebhookSend_ConnectionRefused(t *testing.T) {
 	// Use a URL that will refuse connection
 	provider := NewWebhookProvider("http://127.0.0.1:1", 1*time.Second)
-	result, err := provider.Send(context.Background(), "user@example.com", "email", "Hello")
+	result, err := provider.Send(context.Background(), "notif-1", "user@example.com", "email", "Hello")
 	if err == nil {
 		t.Fatal("expected error for connection refused")
 	}

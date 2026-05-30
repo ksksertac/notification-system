@@ -66,21 +66,21 @@ GET /api/v1/notifications?start_date=2025-05-20
 The API uses an **optimistic publish** pattern with Redis as the primary store:
 
 ```
-1. Save notification to Redis Hash `notification:{id}` (status: pending)
-   + update sorted set indexes                          <- source of truth
-2. Publish to `persist:queue` stream                    <- async PostgreSQL persistence
-3. Transition status: pending → queued                  <- before stream publish
-4. Try Redis XADD to priority stream
+1. Save notification to Redis Hash `notification:{id}` immediately (status: pending)
+   + update sorted set indexes                          <- source of truth, crash-safe
+2. Return 200 OK to client                              <- notification is durable
+3. Write Buffer batches stream publish (XADD) asynchronously
+4. Transition status: pending → queued                  <- before stream publish
+5. Try Redis XADD to priority stream
    +-- success -> consumer picks up with status already 'queued'
-   +-- fail -> revert status to 'pending', return 200 OK <- scheduler recovers
-5. Client always gets success if Redis write succeeded
+   +-- fail -> revert status to 'pending'               <- scheduler recovers within ~30s
+6. Publish to `persist:queue` stream                    <- async PostgreSQL persistence
 ```
 
 **Why this matters:**
 
+- Notification is persisted to Redis **before** the client gets a response — pod crash after step 1 does not lose data
 - Status is updated to `queued` BEFORE publishing to the stream, so consumers always see the correct status
-- The client never sees a failure for a saved notification
-- Pod crashes between steps cannot cause data loss — notification stays `pending` in Redis
 - If stream publish fails, status reverts to `pending` and the scheduler picks it up within ~30 seconds
 - Every write also publishes to the `persist:queue` Redis Stream, which the dbwriter service drains to PostgreSQL for cold storage, reporting, and compliance
 
@@ -91,26 +91,20 @@ This is functionally equivalent to the **Transactional Outbox Pattern** -- Redis
 Under burst traffic the API protects Redis through layered backpressure:
 
 ```
-Request -> Rate Limiter (1000/s) -> Write Buffer -> Redis
-              |                       |
-              v                       v
-         excess -> 429         500 single HSETs
-         Too Many Requests    -> 1 batched pipeline
+Request -> Rate Limiter (1000/s) -> Immediate HSET -> Write Buffer -> Stream XADD
+              |                       |                    |
+              v                       v                    v
+         excess -> 429         crash-safe (durable)   batched publish
 ```
 
-### Write Buffer (Batch Coalescing)
+### Write Buffer (Crash-Safe with Batched Publish)
 
-Single `POST /notifications` calls are collected in an in-memory buffer and flushed as one batched Redis pipeline:
+Each `POST /notifications` call persists the notification to Redis immediately via `repo.Create()` — the notification is durable before the client gets 200 OK. The write buffer then batches the stream publish (XADD) for throughput:
 
-- **Size trigger**: flushes when 500 items accumulate
-- **Time trigger**: flushes every 50ms (whichever comes first)
-- Handlers wait on a per-request channel and get their result when the batch completes
-- Requests with `Idempotency-Key` bypass the buffer (need immediate visibility for duplicate detection)
-
-```
-Without buffer:  1000 requests -> 1000 HSET commands -> 1000 Redis round trips
-With buffer:     1000 requests -> 2 batched pipelines (500 each) -> 2 Redis round trips
-```
+- **Immediate persistence**: `Submit()` calls `repo.Create()` before returning — crash-safe
+- **Batched stream publish**: flushes when 500 items accumulate or every 50ms (whichever comes first)
+- If pod crashes before stream publish, notification stays `pending` — scheduler recovers within ~30s
+- Requests with `Idempotency-Key` bypass the buffer (need immediate visibility for duplicate detection) — they do not benefit from batched stream publish
 
 ### Global Rate Limiter (Redis)
 

@@ -12,5 +12,5 @@ type SendResult struct {
 }
 
 type Provider interface {
-	Send(ctx context.Context, recipient string, channel string, content string) (*SendResult, error)
+	Send(ctx context.Context, notificationID string, recipient string, channel string, content string) (*SendResult, error)
 }

@@ -16,7 +16,7 @@ func NewMockProvider(latency time.Duration) Provider {
 	return &mockProvider{latency: latency}
 }
 
-func (p *mockProvider) Send(ctx context.Context, recipient string, channel string, content string) (*SendResult, error) {
+func (p *mockProvider) Send(ctx context.Context, notificationID string, recipient string, channel string, content string) (*SendResult, error) {
 	if p.latency > 0 {
 		select {
 		case <-time.After(p.latency):

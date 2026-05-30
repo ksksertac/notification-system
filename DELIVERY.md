@@ -2,6 +2,16 @@
 
 This document explains the design decisions behind the notification system's delivery pipeline, retry strategy, failure handling, and recovery mechanisms.
 
+## Delivery Guarantee: At-Least-Once
+
+The system provides **at-least-once delivery** to external providers. This means:
+
+- **No message loss**: Every accepted notification will be delivered at least once. Multiple recovery layers (XAUTOCLAIM, orphaned pending, stuck recovery) ensure no notification is permanently lost.
+- **Possible duplicate delivery**: If a consumer pod crashes after `provider.Send()` succeeds but before the stream message is ACK'd, the message re-enters processing via XAUTOCLAIM and may be delivered again.
+- **Provider-side dedup recommended**: The webhook request includes a `notification_id` field that providers can use for idempotent processing. For real SMS/Email providers, duplicate sends can mean cost or spam — providers should deduplicate on `notification_id`.
+
+**Why not exactly-once delivery?** True exactly-once requires the provider call and the ACK to be in the same atomic transaction, which is impossible with an external HTTP provider. The system achieves exactly-once *processing* at the queue level via CAS (Compare-And-Swap) Lua scripts, but the delivery boundary (HTTP POST to provider) inherently allows duplicates on crash.
+
 ---
 
 ## 1. Delivery Strategy Overview
@@ -12,6 +22,7 @@ The system delivers notifications through an external provider (webhook.site) us
 
 ```json
 {
+  "notification_id": "<uuid>",
   "to": "<recipient>",
   "channel": "<sms|email|push>",
   "content": "<rendered content>"
@@ -381,7 +392,7 @@ ACK-first is simpler but creates a window where the message is acknowledged but 
 
 ### Why Compare-And-Swap (CAS) for status transitions?
 
-Without CAS, two consumers could both read a notification as `queued`, both transition it to `processing`, and both attempt delivery, resulting in duplicate sends. The `updateStatusScript` Lua script atomically checks the current status before updating, ensuring exactly-once processing semantics. If the CAS fails, the worker skips the message (another consumer is handling it).
+Without CAS, two consumers could both read a notification as `queued`, both transition it to `processing`, and both attempt delivery, resulting in duplicate sends. The `updateStatusScript` Lua script atomically checks the current status before updating, ensuring exactly-once *queue-level processing* — only one consumer processes a given notification at a time. Note: this is distinct from exactly-once *delivery* to the external provider (see "Delivery Guarantee" section above). If the CAS fails, the worker skips the message (another consumer is handling it).
 
 ### Why different re-enqueue delays for rate limit vs circuit breaker?
 

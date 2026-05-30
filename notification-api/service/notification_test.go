@@ -179,7 +179,8 @@ func (m *mockPublisher) PublishBatch(ctx context.Context, notifications []*domai
 func TestCreate_ValidSMS(t *testing.T) {
 	repo := newMockRepo()
 	pub := &mockPublisher{}
-	svc := NewNotificationService(repo, pub, NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil), 5, nil)
+	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
+	svc := NewNotificationService(repo, pub, buf, 5, nil)
 
 	req := domain.CreateNotificationRequest{
 		Recipient: "+905551234567",
@@ -199,6 +200,13 @@ func TestCreate_ValidSMS(t *testing.T) {
 	if n.Priority != domain.PriorityHigh {
 		t.Errorf("expected high priority, got %d", n.Priority)
 	}
+	// Notification persisted immediately in Submit (crash-safe)
+	if _, ok := repo.notifications[n.ID]; !ok {
+		t.Error("expected notification to be persisted immediately")
+	}
+
+	// Wait for async batch publish
+	buf.Stop()
 	if len(pub.published) != 1 {
 		t.Errorf("expected 1 published message, got %d", len(pub.published))
 	}
@@ -255,7 +263,8 @@ func TestCreate_ValidationError(t *testing.T) {
 func TestCancel_Success(t *testing.T) {
 	repo := newMockRepo()
 	pub := &mockPublisher{}
-	svc := NewNotificationService(repo, pub, NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil), 5, nil)
+	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
+	svc := NewNotificationService(repo, pub, buf, 5, nil)
 
 	req := domain.CreateNotificationRequest{
 		Recipient: "+905551234567",
@@ -276,12 +285,14 @@ func TestCancel_Success(t *testing.T) {
 	if updated.Status != domain.StatusCancelled {
 		t.Errorf("expected cancelled status, got %s", updated.Status)
 	}
+	buf.Stop()
 }
 
 func TestCancel_AlreadyProcessing(t *testing.T) {
 	repo := newMockRepo()
 	pub := &mockPublisher{}
-	svc := NewNotificationService(repo, pub, NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil), 5, nil)
+	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
+	svc := NewNotificationService(repo, pub, buf, 5, nil)
 
 	req := domain.CreateNotificationRequest{
 		Recipient: "+905551234567",
@@ -299,6 +310,7 @@ func TestCancel_AlreadyProcessing(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected ErrConflict, got: %v", err)
 	}
+	buf.Stop()
 }
 
 func TestCreateBatch(t *testing.T) {
@@ -732,6 +744,29 @@ func TestCreate_RepoCreateError(t *testing.T) {
 	}
 }
 
+func TestCreate_RepoCreateError_BufferPath(t *testing.T) {
+	repo := newMockRepo()
+	repo.createErr = errors.New("write failed")
+	pub := &mockPublisher{}
+	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
+	svc := NewNotificationService(repo, pub, buf, 5, nil)
+
+	req := domain.CreateNotificationRequest{
+		Recipient: "+905551234567",
+		Channel:   "sms",
+		Content:   "Test",
+	}
+
+	_, err := svc.Create(context.Background(), req, "")
+	if err == nil {
+		t.Fatal("expected error from buffer Create failure")
+	}
+	if !strings.Contains(err.Error(), "creating notification") {
+		t.Errorf("expected 'creating notification' error, got: %v", err)
+	}
+	buf.Stop()
+}
+
 func TestCreate_PublishError_StillSucceeds(t *testing.T) {
 	repo := newMockRepo()
 	pub := &mockPublisher{publishErr: errors.New("publish failed")}
@@ -909,7 +944,6 @@ func TestBuffer_Stop(t *testing.T) {
 	pub := &mockPublisher{}
 	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
 
-	// Submit a notification, then stop
 	n := &domain.Notification{
 		ID:        uuid.New(),
 		Recipient: "+905551234567",
@@ -923,12 +957,16 @@ func TestBuffer_Stop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Stop should flush remaining items and return
+	// Notification persisted immediately by Submit
+	if _, ok := repo.notifications[n.ID]; !ok {
+		t.Error("expected notification to be persisted immediately in Submit")
+	}
+
+	// Stop flushes remaining batch (stream publish)
 	buf.Stop()
 
-	// Verify the notification was persisted
-	if _, ok := repo.notifications[n.ID]; !ok {
-		t.Error("expected notification to be flushed on stop")
+	if len(pub.published) != 1 {
+		t.Errorf("expected 1 published after stop, got %d", len(pub.published))
 	}
 }
 
@@ -937,10 +975,8 @@ func TestBuffer_Submit_ContextCancelled(t *testing.T) {
 	pub := &mockPublisher{}
 	buf := NewWriteBuffer(repo, pub, 100, 1*time.Hour, nil)
 
-	// Use an already-cancelled context so that the second select (waiting for resultCh)
-	// or the first select (sending to incoming) times out immediately
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	n := &domain.Notification{
 		ID:      uuid.New(),
@@ -959,44 +995,9 @@ func TestBuffer_Submit_ContextCancelled(t *testing.T) {
 	buf.Stop()
 }
 
-func TestBuffer_FlushOnSizeThreshold(t *testing.T) {
+func TestBuffer_Submit_CreateError(t *testing.T) {
 	repo := newMockRepo()
-	pub := &mockPublisher{}
-	flushSize := 3
-	buf := NewWriteBuffer(repo, pub, flushSize, 1*time.Hour, nil) // very long interval to ensure flush is by size
-
-	// Submit flushSize notifications concurrently (each Submit blocks until flush)
-	errCh := make(chan error, flushSize)
-	for i := 0; i < flushSize; i++ {
-		go func() {
-			n := &domain.Notification{
-				ID:        uuid.New(),
-				Recipient: "+905551234567",
-				Channel:   domain.ChannelSMS,
-				Content:   "batch flush test",
-				Status:    domain.StatusPending,
-			}
-			errCh <- buf.Submit(context.Background(), n)
-		}()
-	}
-
-	// Wait for all submits to complete
-	for i := 0; i < flushSize; i++ {
-		if err := <-errCh; err != nil {
-			t.Fatalf("submit failed: %v", err)
-		}
-	}
-
-	// All should be persisted since flushSize was reached
-	if len(repo.notifications) != flushSize {
-		t.Errorf("expected %d notifications after flush, got %d", flushSize, len(repo.notifications))
-	}
-	buf.Stop()
-}
-
-func TestBuffer_FlushError_PropagatedToSubmitters(t *testing.T) {
-	repo := newMockRepo()
-	repo.createBatchErr = errors.New("batch write failed")
+	repo.createErr = errors.New("redis write failed")
 	pub := &mockPublisher{}
 	buf := NewWriteBuffer(repo, pub, 10, 5*time.Millisecond, nil)
 
@@ -1010,10 +1011,43 @@ func TestBuffer_FlushError_PropagatedToSubmitters(t *testing.T) {
 
 	err := buf.Submit(context.Background(), n)
 	if err == nil {
-		t.Fatal("expected error from flush failure")
+		t.Fatal("expected error from Create failure")
 	}
-	if !strings.Contains(err.Error(), "batch write failed") {
-		t.Errorf("expected 'batch write failed' error, got: %v", err)
+	if !strings.Contains(err.Error(), "redis write failed") {
+		t.Errorf("expected 'redis write failed' error, got: %v", err)
+	}
+	buf.Stop()
+}
+
+func TestBuffer_FlushOnSizeThreshold(t *testing.T) {
+	repo := newMockRepo()
+	pub := &mockPublisher{}
+	flushSize := 3
+	buf := NewWriteBuffer(repo, pub, flushSize, 1*time.Hour, nil)
+
+	for i := 0; i < flushSize; i++ {
+		n := &domain.Notification{
+			ID:        uuid.New(),
+			Recipient: "+905551234567",
+			Channel:   domain.ChannelSMS,
+			Content:   "batch flush test",
+			Status:    domain.StatusPending,
+		}
+		if err := buf.Submit(context.Background(), n); err != nil {
+			t.Fatalf("submit failed: %v", err)
+		}
+	}
+
+	// All should be persisted immediately by Submit
+	if len(repo.notifications) != flushSize {
+		t.Errorf("expected %d notifications after submit, got %d", flushSize, len(repo.notifications))
+	}
+
+	// Wait for flush to happen (triggered by size threshold)
+	time.Sleep(50 * time.Millisecond)
+
+	if len(pub.published) != flushSize {
+		t.Errorf("expected %d published after size-triggered flush, got %d", flushSize, len(pub.published))
 	}
 	buf.Stop()
 }
@@ -1035,9 +1069,9 @@ func TestBuffer_FlushPublishError_StillReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v (publish failure should not propagate)", err)
 	}
-	// Notification was still created in repo
+	// Notification was persisted immediately by Submit
 	if _, ok := repo.notifications[n.ID]; !ok {
-		t.Error("expected notification to be in repo despite publish failure")
+		t.Error("expected notification to be in repo despite future publish failure")
 	}
 	buf.Stop()
 }
@@ -1062,20 +1096,17 @@ func TestBuffer_FlushWithScheduledItems(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Wait for flush
-	time.Sleep(20 * time.Millisecond)
+	buf.Stop()
 
 	// Scheduled notification should NOT be published
 	if len(pub.published) != 0 {
 		t.Errorf("expected 0 published (scheduled), got %d", len(pub.published))
 	}
-	buf.Stop()
 }
 
 func TestBuffer_DefaultValues(t *testing.T) {
 	repo := newMockRepo()
 	pub := &mockPublisher{}
-	// Pass invalid flushSize and flushInterval to test defaults
 	buf := NewWriteBuffer(repo, pub, 0, 0, nil)
 
 	n := &domain.Notification{
@@ -1126,6 +1157,37 @@ func TestBuffer_FlushStatusQueuedBeforePublish(t *testing.T) {
 	if statusAtPublish != domain.StatusQueued {
 		t.Errorf("expected status=queued at publish time, got %s", statusAtPublish)
 	}
+}
+
+func TestBuffer_CrashSafety_NotificationPersistedBeforePublish(t *testing.T) {
+	repo := newMockRepo()
+	pub := &mockPublisher{}
+	buf := NewWriteBuffer(repo, pub, 100, 1*time.Hour, nil)
+
+	n := &domain.Notification{
+		ID:        uuid.New(),
+		Recipient: "+905551234567",
+		Channel:   domain.ChannelSMS,
+		Content:   "crash safety test",
+		Status:    domain.StatusPending,
+	}
+
+	err := buf.Submit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Notification is in Redis BEFORE any flush/publish happens
+	if _, ok := repo.notifications[n.ID]; !ok {
+		t.Fatal("notification must be persisted immediately for crash safety")
+	}
+
+	// Stream publish hasn't happened yet (long flush interval)
+	if len(pub.published) != 0 {
+		t.Error("publish should not have happened yet")
+	}
+
+	buf.Stop()
 }
 
 func TestCreate_PushChannel(t *testing.T) {
