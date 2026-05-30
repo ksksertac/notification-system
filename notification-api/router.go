@@ -33,7 +33,7 @@ func NewRouter(
 	r.Use(tracing.HTTPMiddleware)
 	r.Use(middleware.CorrelationID)
 	r.Use(middleware.Recovery(logger))
-	r.Use(middleware.RateLimit(redisClient, 1000))
+	r.Use(middleware.RateLimit(redisClient, 1000, 50))
 	r.Use(middleware.Logging(logger, metrics))
 	r.Use(middleware.MaxBodySize(2 << 20))
 

@@ -29,20 +29,27 @@ end
 return 0
 `)
 
-func RateLimit(redisClient *redis.Client, requestsPerSecond int) func(http.Handler) http.Handler {
+func RateLimit(redisClient *redis.Client, globalLimit, perUserLimit int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
 			defer cancel()
 
-			key := "ratelimit:api:global"
 			now := time.Now().UnixMilli()
 
-			result, err := apiRateLimitScript.Run(ctx, redisClient, []string{key},
-				requestsPerSecond,
-				1000,
-				now,
-			).Int64()
+			if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
+				userKey := fmt.Sprintf("ratelimit:api:user:%s", apiKey)
+				result, err := apiRateLimitScript.Run(ctx, redisClient, []string{userKey},
+					perUserLimit, 1000, now).Int64()
+				if err == nil && result == 0 {
+					rateLimitResponse(w, r, perUserLimit)
+					return
+				}
+			}
+
+			globalKey := "ratelimit:api:global"
+			result, err := apiRateLimitScript.Run(ctx, redisClient, []string{globalKey},
+				globalLimit, 1000, now).Int64()
 
 			if err != nil {
 				next.ServeHTTP(w, r)
@@ -50,21 +57,25 @@ func RateLimit(redisClient *redis.Client, requestsPerSecond int) func(http.Handl
 			}
 
 			if result == 0 {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "1")
-				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(domain.APIResponse{
-					Success: false,
-					Error: &domain.APIError{
-						Code:    "RATE_LIMIT_EXCEEDED",
-						Message: fmt.Sprintf("rate limit exceeded (%d req/s), try again later", requestsPerSecond),
-					},
-					CorrelationID: GetCorrelationID(r.Context()),
-				})
+				rateLimitResponse(w, r, globalLimit)
 				return
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func rateLimitResponse(w http.ResponseWriter, r *http.Request, limit int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusTooManyRequests)
+	json.NewEncoder(w).Encode(domain.APIResponse{
+		Success: false,
+		Error: &domain.APIError{
+			Code:    "RATE_LIMIT_EXCEEDED",
+			Message: fmt.Sprintf("rate limit exceeded (%d req/s), try again later", limit),
+		},
+		CorrelationID: GetCorrelationID(r.Context()),
+	})
 }
