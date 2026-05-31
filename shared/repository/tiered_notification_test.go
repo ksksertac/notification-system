@@ -411,31 +411,54 @@ func TestList_RoutesToColdWhenStartDateOlderThanOneHour(t *testing.T) {
 }
 
 func TestList_RoutesToHotWhenStartDateIsNil(t *testing.T) {
-	expected := []*domain.Notification{newTestNotification()}
-	hot := &mockNotificationRepo{name: "hot", listResult: expected, listTotal: 10}
-	cold := &mockNotificationRepo{name: "cold"}
+	t.Run("hot only when hot returns enough results", func(t *testing.T) {
+		expected := []*domain.Notification{newTestNotification()}
+		hot := &mockNotificationRepo{name: "hot", listResult: expected, listTotal: 20}
+		cold := &mockNotificationRepo{name: "cold"}
 
-	repo := NewTieredNotificationRepo(hot, cold)
+		repo := NewTieredNotificationRepo(hot, cold)
 
-	req := domain.ListNotificationsRequest{
-		StartDate: nil,
-		Limit:     20,
-	}
+		req := domain.ListNotificationsRequest{StartDate: nil, Limit: 20}
+		_, total, err := repo.List(context.Background(), req)
 
-	_, total, err := repo.List(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if total != 20 {
+			t.Fatalf("expected total 20, got %d", total)
+		}
+		if !hot.listCalled {
+			t.Fatal("expected hot.List to be called")
+		}
+		if cold.listCalled {
+			t.Fatal("cold.List should not be called when hot has enough results")
+		}
+	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if total != 10 {
-		t.Fatalf("expected total 10, got %d", total)
-	}
-	if !hot.listCalled {
-		t.Fatal("expected hot.List to be called when StartDate is nil (Redis-first default)")
-	}
-	if cold.listCalled {
-		t.Fatal("cold.List should not be called when StartDate is nil")
-	}
+	t.Run("falls back to cold when hot has fewer results than limit", func(t *testing.T) {
+		hotN := newTestNotification()
+		coldN := newTestNotification()
+		hot := &mockNotificationRepo{name: "hot", listResult: []*domain.Notification{hotN}, listTotal: 1}
+		cold := &mockNotificationRepo{name: "cold", listResult: []*domain.Notification{coldN}, listTotal: 1}
+
+		repo := NewTieredNotificationRepo(hot, cold)
+
+		req := domain.ListNotificationsRequest{StartDate: nil, Limit: 20}
+		results, total, err := repo.List(context.Background(), req)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if total != 2 {
+			t.Fatalf("expected total 2, got %d", total)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 merged results, got %d", len(results))
+		}
+		if !hot.listCalled || !cold.listCalled {
+			t.Fatal("expected both hot and cold to be called")
+		}
+	})
 }
 
 // --- Create tests ---

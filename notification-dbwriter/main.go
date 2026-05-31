@@ -69,7 +69,7 @@ func run() error {
 	cancel()
 	logger.Info("connected to redis")
 
-	if err := migrator.Run(context.Background(), redisClient, cfg.DB.DSN(), "migrations", logger); err != nil {
+	if err := migrator.Run(context.Background(), redisClient, cfg.DB.DirectDSN(), "migrations", logger); err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
 

@@ -61,14 +61,36 @@ func (t *TieredNotificationRepo) GetByIdempotencyKey(ctx context.Context, key st
 func (t *TieredNotificationRepo) List(ctx context.Context, req domain.ListNotificationsRequest) ([]*domain.Notification, int64, error) {
 	hotWindow := time.Now().UTC().Add(-1 * time.Hour)
 
-	// Default to hot tier (Redis) when no StartDate filter is provided,
-	// since most queries are for recent data. Only route to cold tier
-	// (PostgreSQL) when StartDate is explicitly before the hot window.
+	// Explicit old date range → cold tier only
 	if req.StartDate != nil && req.StartDate.Before(hotWindow) {
 		return t.cold.List(ctx, req)
 	}
 
-	return t.hot.List(ctx, req)
+	// Try hot tier first
+	results, total, err := t.hot.List(ctx, req)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// If no date filter and hot returned fewer results than requested,
+	// also query cold tier to include older data
+	if req.StartDate == nil && int(total) < req.Limit {
+		coldResults, coldTotal, coldErr := t.cold.List(ctx, req)
+		if coldErr == nil && len(coldResults) > 0 {
+			seen := make(map[uuid.UUID]bool, len(results))
+			for _, n := range results {
+				seen[n.ID] = true
+			}
+			for _, n := range coldResults {
+				if !seen[n.ID] {
+					results = append(results, n)
+				}
+			}
+			total += coldTotal
+		}
+	}
+
+	return results, total, nil
 }
 
 func (t *TieredNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, from, to domain.Status) (bool, error) {

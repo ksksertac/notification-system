@@ -16,8 +16,20 @@ import (
 	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
 
+// Key prefixes for Redis data model.
+//
+// Redis Cluster compatibility: Per-notification keys use HashTagKey() which
+// wraps the ID in {braces} so all per-notification keys (hash, persisted flag,
+// DLQ entry, idempotency) land in the same hash slot. This allows Lua scripts
+// to atomically operate on a notification's hash + its related keys.
+//
+// Global index keys (idx:status:*, idx:created_at, persist:queue, streams)
+// are NOT hash-tagged — they span all notifications and must live on a single
+// shard. In a Cluster deployment, these become the throughput ceiling; scale
+// by sharding indexes per time-bucket or accepting single-shard index ops.
 const (
-	KeyNotification = "notification:"
+	KeyNotification = "n:{"
+	KeyNotificationSuffix = "}"
 	KeyIdxStatus    = "idx:status:"
 	KeyIdxChannel   = "idx:channel:"
 	KeyIdxCreatedAt = "idx:created_at"
@@ -27,8 +39,10 @@ const (
 	KeyIdxRequeue   = "idx:requeue"
 	KeySchedule     = "schedule:pending"
 	KeyPersistQueue = "persist:queue"
-	KeyDLQ          = "dlq:"
-	KeyPersisted    = "persisted:"
+	KeyDLQ          = "dlq:{"
+	KeyDLQSuffix    = "}"
+	KeyPersisted    = "p:{"
+	KeyPersistedSuffix = "}"
 
 	IdemKeyTTL          = 7 * 24 * time.Hour
 	PersistedTTL        = 2 * time.Hour
@@ -44,7 +58,15 @@ func NewRedisNotificationRepo(client *redis.Client) NotificationRepository {
 }
 
 func notificationKey(id uuid.UUID) string {
-	return KeyNotification + id.String()
+	return KeyNotification + id.String() + KeyNotificationSuffix
+}
+
+func dlqKey(id string) string {
+	return KeyDLQ + id + KeyDLQSuffix
+}
+
+func persistedKey(id string) string {
+	return KeyPersisted + id + KeyPersistedSuffix
 }
 
 func notificationToMap(n *domain.Notification) map[string]interface{} {
@@ -236,7 +258,7 @@ if KEYS[8] ~= '' and schedScore > 0 then
 end
 
 -- Publish persist event
-redis.call('XADD', KEYS[5], 'MAXLEN', '~', '100000', '*', 'event', persistEvt)
+redis.call('XADD', KEYS[5], 'MAXLEN', '~', '1000000', '*', 'event', persistEvt)
 
 return 1
 `)
@@ -446,7 +468,7 @@ func (r *redisNotificationRepo) GetByBatchID(ctx context.Context, batchID uuid.U
 	cmds := make([]*redis.MapStringStringCmd, len(ids))
 
 	for i, idStr := range ids {
-		cmds[i] = pipe.HGetAll(ctx, KeyNotification+idStr)
+		cmds[i] = pipe.HGetAll(ctx, KeyNotification+idStr+KeyNotificationSuffix)
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -563,7 +585,7 @@ func (r *redisNotificationRepo) List(ctx context.Context, req domain.ListNotific
 	pipe := r.client.Pipeline()
 	cmds := make([]*redis.MapStringStringCmd, len(ids))
 	for i, idStr := range ids {
-		cmds[i] = pipe.HGetAll(ctx, KeyNotification+idStr)
+		cmds[i] = pipe.HGetAll(ctx, KeyNotification+idStr+KeyNotificationSuffix)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, 0, fmt.Errorf("pipeline get: %w", err)
@@ -817,7 +839,7 @@ local retryScore = tonumber(ARGV[6])
 redis.call('ZADD', idxRetry, retryScore, member)
 
 -- Publish persist event
-redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', persistEvt)
+redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', persistEvt)
 
 return 1
 `)
@@ -902,7 +924,7 @@ end
 redis.call('ZREM', fromIdx, member)
 redis.call('ZADD', failedIdx, score, member)
 
-redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', persistEvt)
+redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', persistEvt)
 
 return 1
 `)
@@ -930,7 +952,7 @@ func (r *redisNotificationRepo) MoveToDLQ(ctx context.Context, n *domain.Notific
 
 	keys := []string{
 		notificationKey(n.ID),
-		KeyDLQ + idStr,
+		dlqKey(idStr),
 		KeyIdxStatus + string(n.Status),
 		KeyIdxStatus + string(domain.StatusFailed),
 		KeyIdxCreatedAt,
@@ -982,7 +1004,7 @@ local scheduled = redis.call('ZRANGEBYSCORE', scheduleKey, '-inf', now, 'LIMIT',
 
 local claimed = {}
 for _, id in ipairs(scheduled) do
-    local nKey = 'notification:' .. id
+    local nKey = 'n:{' .. id .. '}'
     local status = redis.call('HGET', nKey, 'status')
     if status == 'pending' then
         redis.call('HSET', nKey, 'status', 'queued', 'updated_at', nowStr)
@@ -995,7 +1017,7 @@ for _, id in ipairs(scheduled) do
         redis.call('ZADD', queuedIdx, score, id)
 
         local evt = cjson.encode({action='update_status', extra={id=id, from='pending', to='queued'}, timestamp=nowStr})
-        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+        redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', evt)
 
         table.insert(claimed, id)
     end
@@ -1051,7 +1073,7 @@ local candidates = redis.call('ZRANGEBYSCORE', fromKey, '-inf', cutoffScore, 'LI
 
 local recovered = {}
 for _, id in ipairs(candidates) do
-    local nKey = 'notification:' .. id
+    local nKey = 'n:{' .. id .. '}'
     local updatedAt = redis.call('HGET', nKey, 'updated_at')
     if updatedAt and updatedAt < cutoffStr then
         redis.call('HSET', nKey, 'status', toStatus, 'updated_at', now)
@@ -1065,7 +1087,7 @@ for _, id in ipairs(candidates) do
         redis.call('ZADD', toKey, score, id)
 
         local evt = cjson.encode({action='update_status', extra={id=id, from=fromStatus, to=toStatus}, timestamp=now})
-        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+        redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', evt)
 
         table.insert(recovered, id)
     end
@@ -1121,7 +1143,7 @@ local ready = redis.call('ZRANGEBYSCORE', retryKey, '-inf', nowNano, 'LIMIT', 0,
 
 local claimed = {}
 for _, id in ipairs(ready) do
-    local nKey = 'notification:' .. id
+    local nKey = 'n:{' .. id .. '}'
     local status = redis.call('HGET', nKey, 'status')
     if status == 'retrying' then
         redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
@@ -1136,7 +1158,7 @@ for _, id in ipairs(ready) do
         redis.call('ZADD', queuedIdx, score, id)
 
         local evt = cjson.encode({action='update_status', extra={id=id, from='retrying', to='queued'}, timestamp=now})
-        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+        redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', evt)
 
         table.insert(claimed, id)
     end
@@ -1190,7 +1212,7 @@ local candidates = redis.call('ZRANGEBYSCORE', fromKey, '-inf', cutoffScore, 'LI
 
 local recovered = {}
 for _, id in ipairs(candidates) do
-    local nKey = 'notification:' .. id
+    local nKey = 'n:{' .. id .. '}'
     local updatedAt = redis.call('HGET', nKey, 'updated_at')
     if updatedAt and updatedAt < cutoffStr then
         redis.call('HSET', nKey, 'status', toStatus, 'updated_at', now)
@@ -1204,7 +1226,7 @@ for _, id in ipairs(candidates) do
         redis.call('ZADD', toKey, score, id)
 
         local evt = cjson.encode({action='update_status', extra={id=id, from=fromStatus, to=toStatus}, timestamp=now})
-        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+        redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', evt)
 
         table.insert(recovered, id)
     end
@@ -1264,7 +1286,7 @@ local recovered = {}
 for _, id in ipairs(candidates) do
     local inSchedule = redis.call('ZSCORE', scheduleKey, id)
     if not inSchedule then
-        local nKey = 'notification:' .. id
+        local nKey = 'n:{' .. id .. '}'
         local updatedAt = redis.call('HGET', nKey, 'updated_at')
         if updatedAt and updatedAt < cutoffStr then
             redis.call('HSET', nKey, 'status', 'queued', 'updated_at', now)
@@ -1278,7 +1300,7 @@ for _, id in ipairs(candidates) do
             redis.call('ZADD', queuedKey, score, id)
 
             local evt = cjson.encode({action='update_status', extra={id=id, from='pending', to='queued'}, timestamp=now})
-            redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+            redis.call('XADD', persistQueue, 'MAXLEN', '~', '1000000', '*', 'event', evt)
 
             table.insert(recovered, id)
         end
@@ -1324,7 +1346,7 @@ func (r *redisNotificationRepo) getNotificationsByIDs(ctx context.Context, ids [
 	pipe := r.client.Pipeline()
 	cmds := make([]*redis.MapStringStringCmd, len(ids))
 	for i, idStr := range ids {
-		cmds[i] = pipe.HGetAll(ctx, KeyNotification+idStr)
+		cmds[i] = pipe.HGetAll(ctx, KeyNotification+idStr+KeyNotificationSuffix)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err
@@ -1373,7 +1395,7 @@ func (r *redisNotificationRepo) publishPersistEvent(ctx context.Context, pipe re
 
 	pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: KeyPersistQueue,
-		MaxLen: 100000,
+		MaxLen: 1000000,
 		Approx: true,
 		Values: map[string]interface{}{
 			"event": string(data),
@@ -1407,7 +1429,7 @@ local ready = redis.call('ZRANGEBYSCORE', requeueKey, '-inf', nowNano, 'LIMIT', 
 
 local claimed = {}
 for _, id in ipairs(ready) do
-    local nKey = 'notification:' .. id
+    local nKey = 'n:{' .. id .. '}'
     local status = redis.call('HGET', nKey, 'status')
     if status == 'queued' then
         redis.call('ZREM', requeueKey, id)

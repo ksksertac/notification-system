@@ -131,6 +131,7 @@ services:
       - notification-dbwriter/.env.example
     environment:
       DB_HOST: pgbouncer
+      DB_DIRECT_HOST: postgres
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       pgbouncer:

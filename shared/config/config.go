@@ -38,12 +38,30 @@ type DBConfig struct {
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
+	DirectHost      string
 }
 
 func (c DBConfig) DSN() string {
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		c.User, c.Password, c.Host, c.Port, c.Name, c.SSLMode,
+	)
+}
+
+// DirectDSN returns a DSN that bypasses PgBouncer and connects directly to
+// PostgreSQL. This is required for operations that use advisory locks (e.g.
+// golang-migrate), which are incompatible with PgBouncer's transaction-pooling
+// mode. If DB_DIRECT_HOST is not set, it falls back to the regular Host. The
+// port is hardcoded to 5432 (the standard PostgreSQL port, not PgBouncer's
+// mapped port).
+func (c DBConfig) DirectDSN() string {
+	host := c.DirectHost
+	if host == "" {
+		host = c.Host
+	}
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		c.User, c.Password, host, "5432", c.Name, c.SSLMode,
 	)
 }
 
@@ -118,6 +136,7 @@ func Load() (*Config, error) {
 			MaxOpenConns:    envIntOrDefault("DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns:    envIntOrDefault("DB_MAX_IDLE_CONNS", 10),
 			ConnMaxLifetime: envDurationOrDefault("DB_CONN_MAX_LIFETIME", 5*time.Minute),
+			DirectHost:      os.Getenv("DB_DIRECT_HOST"),
 		},
 		Redis: RedisConfig{
 			Addr:     envOrDefault("REDIS_ADDR", "localhost:6379"),

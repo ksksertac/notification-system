@@ -51,6 +51,14 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
   - (7) `getRetryReadyScript` and `getRequeueReadyScript` already atomic Lua — confirmed no race. `claimScheduledScript` was the gap (fixed in #1).
   - (8) Retry jitter changed from additive (`rand * base * attempt`) to AWS full jitter (`rand * min(cap, base * 2^attempt)`). Eliminates thundering herd at low attempts.
   - (9) API rate limiter: per-user in-memory fallback limiter added, Redis errors now logged via `slog.Warn`.
+- **Scalability & Durability Hardening (7 fixes)**:
+  - Redis Cluster hash tag: per-notification keys now use `n:{id}`, `dlq:{id}`, `p:{id}` format — all keys for a single notification land in the same hash slot. Global indexes remain un-tagged (single-shard throughput ceiling, documented as known limitation).
+  - Deficit round-robin: empty-read no longer resets deficit to 0 — sets to -1 so accumulated credit is preserved for next poll cycle, ensuring mathematical fairness.
+  - Circuit breaker fail-open: Redis CB errors now logged via `slog.Warn` (was silent). Design tradeoff documented: fail-open chosen for availability over strict protection; CB state shared across pods via Redis.
+  - Tiered List cold fallback: `List()` with no `StartDate` filter now merges hot (Redis) + cold (PostgreSQL) results when hot returns fewer than requested, with deduplication by ID.
+  - persist:queue MAXLEN increased from `~100000` to `~1000000` (10x) — reduces risk of silent event loss when dbwriter lags under sustained load.
+  - Migration PgBouncer bypass: `DirectDSN()` method added to config; migrations now connect directly to PostgreSQL (`DB_DIRECT_HOST`) instead of through PgBouncer, avoiding advisory lock issues with transaction-pooling mode.
+  - Design rationale documented: `idx:requeue`/`idx:retry` use persistent ZSET (crash-safe, no goroutine leak) instead of in-memory timers; scheduler uses Lua ZREM-claim (sorted sets have no consumer group) while consumer uses XREADGROUP (streams have native consumer groups).
 
 ## Key Commands Used
 
@@ -93,3 +101,7 @@ claude "move migrator from API to dbwriter"
 - Provider response bodies capped at 1 MB (`io.LimitReader`)
 - Docker multi-stage builds, GitHub Actions CI per service
 - Jaeger for distributed tracing (OTLP endpoint on 4317/4318, UI on 16686)
+- Redis Cluster-ready key format: per-notification keys use `n:{id}`, `dlq:{id}`, `p:{id}` hash tags
+- Migration bypasses PgBouncer via `DB_DIRECT_HOST` to avoid advisory lock issues with transaction-pooling
+- Tiered List merges hot+cold results when no date filter is provided (deduplicates by ID)
+- persist:queue capped at `~1000000` entries (MAXLEN) — monitor dbwriter lag to prevent silent trim loss

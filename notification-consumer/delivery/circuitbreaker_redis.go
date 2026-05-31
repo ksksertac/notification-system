@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -75,7 +76,7 @@ func (cb *RedisCircuitBreaker) Allow() bool {
 		openDurationMs, nowMs, cb.halfOpenMax,
 	).Int64()
 	if err != nil {
-		// On error, allow the request (fail open)
+		slog.Warn("circuit breaker redis error, failing open", "key", cb.key, "error", err)
 		return true
 	}
 	return result == 1

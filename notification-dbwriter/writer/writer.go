@@ -208,7 +208,7 @@ func (w *Writer) flushCreates(ctx context.Context, notifications []*domain.Notif
 		// Mark each notification as persisted in Redis so cleanup won't evict unpersisted data
 		pipe := w.redis.Pipeline()
 		for _, n := range batch {
-			pipe.Set(ctx, repository.KeyPersisted+n.ID.String(), "1", repository.PersistedTTL)
+			pipe.Set(ctx, repository.KeyPersisted+n.ID.String()+repository.KeyPersistedSuffix, "1", repository.PersistedTTL)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			w.logger.Error("failed to mark notifications as persisted", "count", len(batch), "error", err)

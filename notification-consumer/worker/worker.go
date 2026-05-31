@@ -174,10 +174,10 @@ func (wp *WorkerPool) pollStreams(ctx context.Context, consumerName string) bool
 		}
 
 		wp.deficitMu.Lock()
-		if len(msgs) == 0 {
-			wp.deficit[maxIdx] = 0
-		} else {
+		if len(msgs) > 0 {
 			wp.deficit[maxIdx] -= len(msgs)
+		} else {
+			wp.deficit[maxIdx] = -1
 		}
 		wp.deficitMu.Unlock()
 

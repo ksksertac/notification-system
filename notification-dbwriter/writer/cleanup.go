@@ -82,8 +82,8 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 	hgetCmds := make(map[string]*redis.MapStringStringCmd, len(ids))
 
 	for _, idStr := range ids {
-		existsCmds[idStr] = lookupPipe.Exists(ctx, repository.KeyPersisted+idStr)
-		hgetCmds[idStr] = lookupPipe.HGetAll(ctx, repository.KeyNotification+idStr)
+		existsCmds[idStr] = lookupPipe.Exists(ctx, repository.KeyPersisted+idStr+repository.KeyPersistedSuffix)
+		hgetCmds[idStr] = lookupPipe.HGetAll(ctx, repository.KeyNotification+idStr+repository.KeyNotificationSuffix)
 	}
 
 	if _, err := lookupPipe.Exec(ctx); err != nil {
@@ -100,12 +100,12 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 			continue
 		}
 
-		nKey := repository.KeyNotification + idStr
+		nKey := repository.KeyNotification + idStr + repository.KeyNotificationSuffix
 
 		vals, err := hgetCmds[idStr].Result()
 		if err != nil || len(vals) == 0 {
 			evictPipe.ZRem(ctx, repository.KeyIdxCreatedAt, idStr)
-			evictPipe.Del(ctx, repository.KeyPersisted+idStr)
+			evictPipe.Del(ctx, repository.KeyPersisted+idStr+repository.KeyPersistedSuffix)
 			continue
 		}
 
@@ -125,8 +125,8 @@ func (w *Writer) evictBatch(ctx context.Context, ids []string) {
 			evictPipe.SRem(ctx, repository.KeyIdxBatch+batchID, idStr)
 		}
 
-		evictPipe.Del(ctx, repository.KeyDLQ+idStr)
-		evictPipe.Del(ctx, repository.KeyPersisted+idStr)
+		evictPipe.Del(ctx, repository.KeyDLQ+idStr+repository.KeyDLQSuffix)
+		evictPipe.Del(ctx, repository.KeyPersisted+idStr+repository.KeyPersistedSuffix)
 	}
 
 	if _, err := evictPipe.Exec(ctx); err != nil {

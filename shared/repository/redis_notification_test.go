@@ -317,7 +317,7 @@ func TestMoveToDLQ(t *testing.T) {
 	}
 
 	// Verify DLQ entry was created using the redis client
-	dlqKey := KeyDLQ + n.ID.String()
+	dlqKey := KeyDLQ + n.ID.String() + KeyDLQSuffix
 	dlqVals, err := client.HGetAll(ctx, dlqKey).Result()
 	if err != nil {
 		t.Fatalf("HGetAll DLQ failed: %v", err)
@@ -2163,7 +2163,7 @@ func TestGetByBatchIDWithInvalidNotificationData(t *testing.T) {
 	// Manually add an invalid ID to the batch set
 	client.SAdd(ctx, KeyIdxBatch+batchID.String(), invalidID)
 	// Create an invalid hash (missing required fields / invalid id)
-	client.HSet(ctx, KeyNotification+invalidID, map[string]interface{}{
+	client.HSet(ctx, KeyNotification+invalidID+KeyNotificationSuffix, map[string]interface{}{
 		"id":      "not-a-uuid",
 		"channel": "sms",
 	})
@@ -2574,7 +2574,7 @@ func TestListWithInvalidNotificationInResults(t *testing.T) {
 	score := float64(time.Now().UTC().UnixNano())
 	client.ZAdd(ctx, KeyIdxCreatedAt, redis.Z{Score: score, Member: invalidID})
 	client.ZAdd(ctx, KeyIdxStatus+string(domain.StatusPending), redis.Z{Score: score, Member: invalidID})
-	client.HSet(ctx, KeyNotification+invalidID, map[string]interface{}{
+	client.HSet(ctx, KeyNotification+invalidID+KeyNotificationSuffix, map[string]interface{}{
 		"id": "not-a-valid-uuid",
 	})
 

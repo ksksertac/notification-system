@@ -381,7 +381,7 @@ With buffer:     1000 requests → 1000 HSET (immediate) + 2 pipeline XADD → 1
 
 | Key Pattern | Type | Purpose |
 |-------------|------|---------|
-| `notification:{id}` | Hash | All notification fields (primary data) |
+| `n:{id}` | Hash | All notification fields (hash-tagged for Cluster) |
 | `idx:status:{status}` | Sorted Set | Index by status (score=created_at, member=ID) |
 | `idx:channel:{channel}` | Sorted Set | Index by channel (score=created_at, member=ID) |
 | `idx:created_at` | Sorted Set | Global time-ordered index |
@@ -394,7 +394,8 @@ With buffer:     1000 requests → 1000 HSET (immediate) + 2 pipeline XADD → 1
 | `idx:retry` | Sorted Set | Retry scheduling index (score=next_retry_at as UnixNano) |
 | `idx:requeue` | Sorted Set | Re-enqueue scheduling index for CB/rate-limit deferred notifications |
 | `cb:{channel}` | Hash | Redis-backed circuit breaker state per channel |
-| `dlq:{notification_id}` | Hash | Dead letter queue entry (failed notification + error details) |
+| `dlq:{notification_id}` | Hash | Dead letter queue entry (hash-tagged for Cluster) |
+| `p:{notification_id}` | String (TTL 2h) | Persisted-to-PG flag (hash-tagged for Cluster) |
 | `notifications:low` | Stream | Low-priority delivery queue |
 
 ## Horizontal Scaling — Race-to-Claim (No Ring Hash)
