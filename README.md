@@ -80,16 +80,16 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Immediate 
 
 | Feature | Implementation |
 |---------|---------------|
-| **API Key Authentication** | `X-API-Key` header with timing-safe comparison (`subtle.ConstantTimeCompare`), protects `/api/v1/*` routes |
+| **API Key Authentication** | `X-API-Key` header with timing-safe comparison (`subtle.ConstantTimeCompare`), protects `/api/v1/*` routes (API key rate limit log'larında plaintext olarak loglanıyor — log erişimi olan kişiler key'i görebilir; K8s ConfigMap'te plaintext saklanıyor, Secret kullanılmalı) |
 | **WebSocket Origin Validation** | Per-request origin check against configurable allowlist (`WS_ALLOWED_ORIGINS`) |
 | **WebSocket Heartbeat** | Ping/pong every 30s, 60s read deadline — detects and evicts stale connections |
 | **WebSocket Connection Limit** | Max 1000 concurrent connections to prevent resource exhaustion |
-| **Rate Limiting** | Global Redis sliding window (1000 req/s), returns `429` with `Retry-After` header |
+| **Rate Limiting** | Global Redis sliding window (1000 req/s), returns `429` with `Retry-After` header (rate limit kontrolü auth'tan önce çalıştığı için geçersiz API key'ler bile rate limit oluşturur — bu davranış farkı ile geçerli/geçersiz key ayrımı yapılabilir) |
 | **Correlation ID Validation** | Max 64 chars, alphanumeric + hyphens only — prevents header injection |
 | **Request Body Limit** | 2 MB max body size middleware |
-| **Template Rendering** | `html/template` (not `text/template`) for XSS-safe output |
+| **Template Rendering** | `html/template` (not `text/template`) for XSS-safe output (kullanıcı content alanına Go template syntax — `{{.}}`, `{{range}}` — enjekte edebilir; XSS engellenir ancak SSTI ile bilgi sızıntısı veya CPU-yoğun döngülerle DoS mümkündür) |
 | **Provider Response Limit** | `io.LimitReader` caps provider response body at 1 MB — prevents memory exhaustion from malicious/broken providers |
-| **Persistent Re-enqueue** | CB/rate-limit deferred notifications stored in persistent `idx:requeue` ZSET — scheduler polls every 2s, crash-safe, no goroutine leaks |
+| **Persistent Re-enqueue** | CB/rate-limit deferred notifications stored in persistent `idx:requeue` ZSET — scheduler polls every 2s, crash-safe, no goroutine leaks (Redis restart'ında persistence yoksa ZSET kaybolur ve bekleyen requeue'lar sessizce silinir) |
 | **Requeue Count Limit** | Circuit breaker re-enqueue capped at 50 attempts per notification — moves to DLQ on exceeded limit, preventing infinite re-enqueue loops |
 | **Distributed Tracing** | W3C Trace Context (`traceparent`/`tracestate`) propagated through Redis Streams and persist events; `otelhttp.NewTransport` on webhook client for automatic span instrumentation; Loki↔Jaeger correlation via `correlation_id` |
 | **Prometheus Isolation** | Custom registry per service — no global metric conflicts between instances |
@@ -151,7 +151,7 @@ docker-compose up --build
 | http://localhost:8080/health | Health check |
 | http://localhost:8080/metrics | Prometheus metrics |
 | ws://localhost:8080/ws | WebSocket |
-| http://localhost:3000 | Grafana (admin/admin) — see [Dashboards](#grafana-dashboards) |
+| http://localhost:3000 | Grafana (admin/admin, anonim erişim açık — production'da `GF_AUTH_ANONYMOUS_ENABLED=false` yapılmalı) — see [Dashboards](#grafana-dashboards) |
 | http://localhost:9094 | Prometheus |
 | http://localhost:9093 | Alertmanager |
 | http://localhost:16686 | Jaeger (distributed tracing) |
@@ -205,7 +205,7 @@ Load test → API receives burst traffic
 
 ## Recovery Layers
 
-Every notification state has an automatic recovery path. If any component crashes or a delivery fails, the system recovers without manual intervention:
+Every notification state has an automatic recovery path. If any component crashes or a delivery fails, the system recovers without manual intervention (bu garanti Redis'in erişilebilir olmasına ve en az 1 scheduler + 1 consumer pod'un çalışmasına bağlıdır):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -242,7 +242,7 @@ Every notification state has an automatic recovery path. If any component crashe
 
 ## Data Consistency & Reliability
 
-The system uses an **optimistic publish pattern** (outbox-like) to guarantee zero message loss, even during pod crashes or Redis downtime. Every notification is persisted to Redis immediately on submission — before the client receives a 200 OK response — ensuring crash safety. Stream publish is batched asynchronously; if the pod crashes before publish, the scheduler's orphaned-pending recovery picks up the notification within ~30 seconds. Redis is the primary data store — all hot-path reads and writes go through Redis. PostgreSQL serves as cold storage for reporting and analytics, fed asynchronously via the `persist:queue` stream. A **tiered read** pattern ensures the API reads from Redis for recent data (last 1 hour) and falls back to PostgreSQL for older data.
+The system uses an **optimistic publish pattern** (outbox-like) to guarantee zero message loss, even during pod crashes or Redis downtime. (Redis'in kendisi veri kaybederse — örn. persistence olmadan restart, bellek taşması ile OOM kill — henüz PostgreSQL'e persist edilmemiş notification'lar kaybolur. Production'da Redis AOF persistence ve Sentinel/Cluster yapılandırması bu riski büyük ölçüde azaltır.) Every notification is persisted to Redis immediately on submission — before the client receives a 200 OK response — ensuring crash safety. Stream publish is batched asynchronously; if the pod crashes before publish, the scheduler's orphaned-pending recovery picks up the notification within ~30 seconds. Redis is the primary data store — all hot-path reads and writes go through Redis. PostgreSQL serves as cold storage for reporting and analytics, fed asynchronously via the `persist:queue` stream. A **tiered read** pattern ensures the API reads from Redis for recent data (last 1 hour) and falls back to PostgreSQL for older data.
 
 **Delivery guarantee:** The system provides **at-least-once delivery** to external providers. Duplicate delivery is possible if a consumer pod crashes after a successful provider call but before the stream ACK. The webhook request includes a `notification_id` field for provider-side deduplication. See [DELIVERY.md](DELIVERY.md) for details.
 
@@ -295,14 +295,14 @@ POST /api/v1/notifications
 | Scenario | What happens | Recovery | Max delay |
 |----------|-------------|----------|-----------|
 | Redis down | API cannot write — client gets error | Client retries with Idempotency-Key | Immediate |
-| API pod killed before Redis publish | Notification stays `pending` in Redis | Scheduler picks up orphaned `pending` | ~30s |
+| API pod killed before Redis publish | Notification stays `pending` in Redis | Scheduler picks up orphaned `pending` (scheduler da çökmüşse recovery uygulanmaz — en az 1 scheduler pod'un çalışıyor olması gerekir) | ~30s |
 | Scheduler pod killed after claim, before stream publish | Notification stuck as `queued` in Redis | Recovery loop resets to `pending` + re-publishes to stream | ~2min |
 | Consumer pod killed mid-processing | Redis Stream message unacknowledged | XPENDING + XCLAIM recovery (claimer goroutine) | ~15s |
 | Consumer pod killed mid-processing (status stuck) | Notification stuck as `processing` in Redis | Recovery loop resets to `queued` + re-publishes to stream | ~2min |
 | Provider temporary failure | Delivery fails with retryable error, status set to `retrying` | Exponential backoff retry via `idx:retry` sorted set — scheduler re-enqueues when delay expires | 2s–60s |
 | Provider permanent failure | Delivery fails with non-retryable error | Moved to DLQ immediately | Immediate |
 | Max retries exceeded | All retry attempts exhausted | Moved to DLQ | Immediate |
-| persist:queue consumer (dbwriter) down | Notifications remain in Redis (hot store) | dbwriter catches up on restart via consumer group | Minutes |
+| persist:queue consumer (dbwriter) down | Notifications remain in Redis (hot store) | dbwriter catches up on restart via consumer group (ancak persist:queue MAXLEN ~1000000 — dbwriter çok uzun süre çöküp stream taşarsa, trim edilen event'ler PostgreSQL'e hiç yazılamaz ve cold storage'da veri eksik kalır) | Minutes |
 | PostgreSQL down | Hot path unaffected — API/consumer/scheduler use Redis only | dbwriter retries persist:queue entries on PG recovery | Minutes |
 | Redis write fails | Client gets error, nothing persisted | Client retries with Idempotency-Key | Immediate |
 
@@ -498,13 +498,13 @@ Global index keys (`idx:status:*`, `idx:created_at`, `idx:retry`, `idx:requeue`,
 ## Key Design Decisions
 
 - **Hybrid Redis-First with Hot/Cold Tiering**: Redis keeps last 1 hour of data (hot), PostgreSQL keeps full history (cold). API reads use tiered fallback — Redis first, PostgreSQL for older data. dbwriter evicts Redis entries older than 1 hour to keep RAM bounded
-- **Redis Streams as queue**: 3 priority streams (high/normal/low), O(1) enqueue, native consumer groups, built-in crash recovery (XPENDING + XCLAIM)
+- **Redis Streams as queue**: 3 priority streams (high/normal/low), O(1) enqueue, native consumer groups, built-in crash recovery (XPENDING + XCLAIM) (Redis şifresiz ve TLS'siz erişimde stream verileri ağ üzerinde plaintext iletilir — notification içeriği PII barındırabilir)
 - **Optimistic Publish**: Redis is source of truth for hot data, stream publish is best-effort — scheduler catches failures
 - **Write Buffer**: crash-safe immediate HSET per request, with batched stream publish (XADD) every 50ms or 500 items. Idempotent requests bypass the buffer for atomic dedup
 - **PgBouncer**: connection multiplexing shared by dbwriter (writes) and API (cold read fallback) to PostgreSQL
 - **Race-to-Claim**: scheduler, consumer, dbwriter all scale via atomic Redis operations — no ring hash, no partition assignment, no rebalance. Lua scripts guarantee atomicity
 - **Redis Lua Scripts**: server-side atomic operations for CAS (compare-and-swap), scheduled claim, recovery, rate limiting — same guarantee as `SELECT FOR UPDATE` at Redis speed
-- **Multi-Layer Recovery**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream
+- **Multi-Layer Recovery**: 9 recovery mechanisms ensure no notification is lost — from exponential backoff retry (2s) through XAUTOCLAIM (15s) to stuck recovery (2min). Every stuck state has an automatic recovery path that re-publishes to the delivery stream (tüm recovery mekanizmaları Redis'in erişilebilir olmasına ve en az 1 scheduler pod'un çalışmasına bağlıdır — her ikisi de çökerse recovery uygulanmaz; notification hash TTL'i 48 saat olduğundan bu süre içinde recovery başlamazsa veri kaybolur)
 - **Global Rate Limiting**: Redis sliding window (1000 req/s shared across all pods) protects the system from traffic bursts
 - **Deficit Round-Robin Scheduling**: prevents priority starvation with fair weighted scheduling (high:10, normal:5, low:2). Each stream accumulates deficit credits; the highest-deficit stream is served first, ensuring all priorities get throughput proportional to their weight
 - **Circuit Breaker**: per channel, 5 failures -> open 30s -> half-open probe. Redis-backed distributed state with 500ms context timeouts. CB-open re-enqueue uses exponential backoff (500ms→30s cap) based on requeue count; rate-limit re-enqueue uses fixed 500ms. Re-enqueue capped at 50 attempts — exceeding the limit moves to DLQ instead of infinite loops
@@ -512,8 +512,8 @@ Global index keys (`idx:status:*`, `idx:created_at`, `idx:retry`, `idx:requeue`,
 - **Auto-Migration**: Redis SETNX leader election, no init container needed
 - **Cursor-Based Pagination**: consistent performance regardless of offset depth
 - **API Key Authentication**: timing-safe comparison via `subtle.ConstantTimeCompare`, optional per environment
-- **WebSocket Security**: per-request origin validation, ping/pong heartbeat (30s/60s), max 1000 connections
-- **Template Caching**: compiled templates cached in `sync.Map`, `html/template` for XSS safety
+- **WebSocket Security**: per-request origin validation, ping/pong heartbeat (30s/60s), max 1000 connections (/ws endpoint API key auth middleware dışında — kimlik doğrulaması olmadan herkes bağlanıp tüm notification durum güncellemelerini izleyebilir; Origin header'ı olmayan araçlar doğrudan bağlanabilir)
+- **Template Caching**: compiled templates cached in `sync.Map`, `html/template` for XSS safety (cache boyut sınırı yok — benzersiz content string'leri ile sınırsız bellek tüketimi mümkün, LRU cache ile sınırlandırılmalı)
 - **Atomic Idempotency**: Lua `createScript` checks the idempotency key (`GET`) before writing — prevents duplicate notifications under concurrent requests with the same key (eliminates TOCTOU race between `GetByIdempotencyKey` and `Create`)
 - **Distributed Tracing**: Full OpenTelemetry SDK integration (OTLP/HTTP exporter → Jaeger). All 4 services initialize `tracing.InitTracer()` at startup. API uses `otelhttp` middleware for automatic span creation. Correlation ID propagated via Redis Stream messages for log-to-trace correlation
 - **Persistent Re-enqueue**: Rate-limited and circuit-breaker-deferred notifications are added to a persistent `idx:requeue` ZSET instead of in-memory goroutines. The scheduler polls this ZSET every 2s and republishes ready notifications to streams — crash-safe, no goroutine leaks

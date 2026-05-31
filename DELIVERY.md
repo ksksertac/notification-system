@@ -6,7 +6,7 @@ This document explains the design decisions behind the notification system's del
 
 The system provides **at-least-once delivery** to external providers. This means:
 
-- **No message loss**: Every accepted notification will be delivered at least once. Multiple recovery layers (XAUTOCLAIM, orphaned pending, stuck recovery) ensure no notification is permanently lost.
+- **No message loss**: Every accepted notification will be delivered at least once. Multiple recovery layers (XAUTOCLAIM, orphaned pending, stuck recovery) ensure no notification is permanently lost. (Redis tamamen çökerse ve persist:queue tüketilmeden veri kaybolursa, henüz PostgreSQL'e yazılmamış notification'lar kaybolabilir. Redis AOF/RDB persistence veya Redis Sentinel/Cluster ile bu risk azaltılır.)
 - **Possible duplicate delivery**: If a consumer pod crashes after `provider.Send()` succeeds but before the stream message is ACK'd, the message re-enters processing via XAUTOCLAIM and may be delivered again.
 - **Provider-side dedup recommended**: The webhook request includes a `notification_id` field that providers can use for idempotent processing. For real SMS/Email providers, duplicate sends can mean cost or spam — providers should deduplicate on `notification_id`.
 
@@ -203,7 +203,7 @@ In a multi-pod deployment, circuit breaker state must be shared. The system uses
 
 - **State storage**: Redis Hash at `cb:{channel}` with fields `state`, `failures`, `opened_at`, `half_open_count`, `last_failure_at`
 - **Atomicity**: All state reads and transitions happen inside Lua scripts to prevent race conditions between pods
-- **Fail-open**: If Redis is unreachable, the circuit breaker defaults to allowing requests rather than blocking delivery
+- **Fail-open**: If Redis is unreachable, the circuit breaker defaults to allowing requests rather than blocking delivery (bu durumda provider gerçekten çökmüşse, tüm istekler başarısız olur ve retry sayısı hızla tükenir — fail-open kullanılabilirlik için tercih edildi ancak provider korumasını geçici olarak devre dışı bırakır)
 
 ### When the Circuit Breaker is Open
 
@@ -214,7 +214,7 @@ Messages are not dropped. Instead:
 3. The stream message is ACK'd to prevent the consumer group from re-delivering it
 4. A Prometheus metric (`circuit_breaker_open_total`) is incremented
 
-This ensures zero message loss while giving the provider breathing room. The exponential backoff prevents re-enqueue storms — without it, notifications would cycle every ~2.5s indefinitely.
+Bu mekanizma provider'a nefes aldırırken mesaj kaybını engeller. (Ancak requeue_count limiti olan 50'ye ulaşılırsa notification DLQ'ya taşınır — provider uzun süre ayağa kalkmazsa bu "loss" değil "permanent failure" olarak sınıflandırılır ama sonuçta teslim edilememiş olur.) The exponential backoff prevents re-enqueue storms — without it, notifications would cycle every ~2.5s indefinitely.
 
 ---
 
@@ -354,7 +354,7 @@ The system is designed with the assumption that any component can fail at any ti
 
 **Trigger:** Every state change (create, status update, retry increment, DLQ move) publishes a persist event to the `persist:queue` Redis Stream.
 **Action:** The `notification-dbwriter` service consumes these events and writes them to PostgreSQL in batches.
-**Purpose:** Even if Redis data is lost entirely, the PostgreSQL tables contain the full history of every notification. This is the final safety net for data durability.
+**Purpose:** Even if Redis data is lost entirely, the PostgreSQL tables contain the full history of every notification. This is the final safety net for data durability. (persist:queue MAXLEN ~1000000 ile sınırlı — dbwriter uzun süre çöküp stream taşarsa, eski persist event'leri Redis tarafından trim edilir ve bu event'ler PostgreSQL'e hiç yazılamaz. Bu durumda Redis'teki veri var olur ama cold storage'da eksik kalır. dbwriter lag'ı monitoring ile izlenmelidir.)
 
 ### Recovery Timing
 
@@ -376,7 +376,7 @@ The system is designed with the assumption that any component can fail at any ti
 
 ### Why Redis-based retry scheduling instead of in-memory timers?
 
-In-memory timers (e.g., `time.AfterFunc`) are lost when a pod restarts. With Redis, the `idx:retry` sorted set persists retry schedules across pod restarts and is visible to all consumer instances. Any scheduler pod can pick up due retries regardless of which consumer originally scheduled them.
+In-memory timers (e.g., `time.AfterFunc`) are lost when a pod restarts. With Redis, the `idx:retry` sorted set persists retry schedules across pod restarts and is visible to all consumer instances. Any scheduler pod can pick up due retries regardless of which consumer originally scheduled them. (Ancak Redis'in kendisi restart olursa ve RDB/AOF persistence yoksa, idx:retry ve idx:requeue ZSET'leri kaybolur — bekleyen retry'lar ve requeue'lar sessizce silinir. Production'da Redis persistence aktif olmalıdır.)
 
 ### Why re-enqueue instead of sleep on rate limit / circuit breaker open?
 

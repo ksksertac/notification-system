@@ -183,9 +183,9 @@ All services scale by adding pods. No ring hash, no Zookeeper, no partition reba
 
 | Trade-off | Why |
 |-----------|-----|
-| Eventual consistency for cold reads | PostgreSQL is 1-2 seconds behind Redis — acceptable for reporting |
-| Redis as SPOF for hot path | Redis Sentinel/Cluster can mitigate; for this scope, single Redis is fine |
-| No exactly-once delivery | At-least-once with idempotency is sufficient; exactly-once adds prohibitive complexity |
+| Eventual consistency for cold reads | PostgreSQL is 1-2 seconds behind Redis — acceptable for reporting (dbwriter lag'ı artarsa bu fark dakikalara çıkabilir; persist:queue MAXLEN ~1000000 aşılırsa eski event'ler trim edilir ve PostgreSQL'de eksik kayıt kalır) |
+| Redis as SPOF for hot path | Redis Sentinel/Cluster can mitigate; for this scope, single Redis is fine (Redis çökerse henüz PostgreSQL'e persist edilmemiş tüm hot data kaybolur — bu "zero loss" garantisini kırar; production'da Redis persistence + HA şart) |
+| No exactly-once delivery | At-least-once with idempotency is sufficient; exactly-once adds prohibitive complexity (consumer crash sonrası provider'a çift teslimat olabilir — provider tarafında notification_id ile dedup yapılmazsa mükerrer SMS/email gönderilir ve maliyet/spam riski oluşur) |
 | Webhook.site as provider | Assessment scope — real providers (Twilio, SendGrid) are plug-and-play replacements |
 | Single Redis instance | Assessment scope — production would use Redis Cluster for HA |
 | k3d for local K8s | Lightweight alternative to minikube/kind — k3s runs in Docker containers, same K8s API |

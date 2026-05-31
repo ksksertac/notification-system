@@ -37,7 +37,7 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **OTel Endpoint Fix (C4)**: Fixed double `http://` prefix in docker-compose OTLP endpoint values. `WithEndpoint()` expects `host:port` without scheme.
 - **End-to-End Trace Propagation**: W3C Trace Context (`traceparent`/`tracestate`) now propagated through Redis Stream messages and persist events. Consumer extracts trace context from queue messages so Jaeger shows a single trace spanning API→Queue→Consumer→Webhook→DBWriter. Webhook HTTP client wrapped with `otelhttp.NewTransport` for automatic span creation on outbound calls. `shared/tracing/propagation.go` provides `MapCarrier`, `InjectTraceContext`, `ExtractTraceContext` helpers.
 - **Observability Stack Enhancements**: Custom Loki config (TSDB v13, 7-day retention, embedded cache, ruler for log-based alerting), enhanced Promtail config (Docker stage, service labels, structured metadata, Promtail metrics), Jaeger datasource in Grafana with Loki↔Jaeger trace-log correlation via `correlation_id`, 7 log-based alert rules (HighErrorRate, CircuitBreakerOpen, DLQ, DB/Redis errors, NoLogs), enriched Log Explorer dashboard with stat panels, top errors table, and correlation ID filter.
-- **Crash-Safe Write Buffer**: Buffer `Submit()` now persists each notification to Redis immediately via `repo.Create()` before returning 200 OK. Stream publish (XADD) is still batched for throughput. If pod crashes before stream publish, notification stays `pending` in Redis — scheduler recovers within ~30s. Eliminates the previous in-memory buffer crash-loss window.
+- **Crash-Safe Write Buffer**: Buffer `Submit()` now persists each notification to Redis immediately via `repo.Create()` before returning 200 OK. Stream publish (XADD) is still batched for throughput. If pod crashes before stream publish, notification stays `pending` in Redis — scheduler recovers within ~30s. Eliminates the previous in-memory buffer crash-loss window. (Crash-safe yalnızca Redis ayakta ve veri kaybetmediği sürece geçerlidir — Redis persistence olmadan restart'ta HSET'ler kaybolur. Ayrıca scheduler'ın çalışıyor olması gerekir; tüm scheduler pod'lar çökmüşse orphaned pending recovery uygulanmaz.)
 - **At-Least-Once Delivery Documentation**: Explicitly documented at-least-once delivery semantics in DELIVERY.md. Clarified that CAS provides exactly-once queue-level processing, not exactly-once end-to-end delivery.
 - **Provider Dedup Key**: Webhook provider now includes `notification_id` in outbound JSON payload, enabling provider-side deduplication for at-least-once delivery scenarios.
 
@@ -87,10 +87,10 @@ claude "move migrator from API to dbwriter"
 
 - Go 1.25, Chi router, go-redis/v9
 - All services share code via `shared/` module with `replace` directive
-- Redis is the primary data store; PostgreSQL is cold storage only
+- Redis is the primary data store; PostgreSQL is cold storage only (Redis persistence yapılandırılmamış — restart'ta tüm hot data kaybolur; production'da AOF/RDB aktif edilmeli)
 - Every Redis write publishes to `persist:queue` for async PostgreSQL persistence
 - Lua scripts for all atomic operations (CAS, claim, recovery, create, incrementRetry)
-- No `.env` files in repo — only `.env.example`
+- No `.env` files in repo — only `.env.example` (ancak K8s ConfigMap'lerde ve docker-compose.yml'de DB_PASSWORD, API_KEY gibi credentials plaintext olarak bulunuyor — production'da K8s Secret veya Vault kullanılmalı)
 - Structured JSON logging, Prometheus metrics (custom registries) on all services
 - Sentinel errors with `errors.Is()` in API service (including `ErrIdempotencyConflict`)
 - All background operations use `context.WithTimeout` (no unbounded contexts)

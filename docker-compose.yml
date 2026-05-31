@@ -1,9 +1,13 @@
+# UYARI: Bu dosyadaki credential'lar (DB_PASSWORD, API_KEY, Grafana admin şifresi)
+# yalnızca local geliştirme içindir. Production'da .env dosyası veya secret manager kullanılmalıdır.
+# Redis şifresiz çalışmaktadır — production'da --requirepass ile şifre eklenmelidir.
+# Tüm servisler arası iletişim plaintext HTTP'dir — production'da TLS/mTLS gereklidir.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: notification
-      POSTGRES_PASSWORD: notification_secret
+      POSTGRES_PASSWORD: notification_secret  # Production'da değiştirilmeli
       POSTGRES_DB: notification_db
     ports:
       - "5432:5432"
