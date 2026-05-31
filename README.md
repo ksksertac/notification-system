@@ -151,7 +151,7 @@ docker-compose up --build
 | http://localhost:8080/health | Health check |
 | http://localhost:8080/metrics | Prometheus metrics |
 | ws://localhost:8080/ws | WebSocket |
-| http://localhost:3000 | Grafana (admin/admin) |
+| http://localhost:3000 | Grafana (admin/admin) — see [Dashboards](#grafana-dashboards) |
 | http://localhost:9094 | Prometheus |
 | http://localhost:9093 | Alertmanager |
 | http://localhost:16686 | Jaeger (distributed tracing) |
@@ -490,6 +490,30 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 - **Bounded Contexts**: all background operations use `context.WithTimeout` — no unbounded `context.Background()` calls
 - **Sentinel Errors**: `errors.Is()` for error classification instead of string matching
 
+## Grafana Dashboards
+
+6 pre-provisioned dashboards at `http://localhost:3000` (admin/admin):
+
+| Dashboard | Path | Purpose |
+|-----------|------|---------|
+| **Notification Overview** | `/d/notification-overview` | Today/week/month delivery counts, failure rate, avg latency, channel breakdown, p50/p95/p99 percentiles, rate limit & CB metrics |
+| **Notification Pipeline** | `/d/notification-pipeline` | Queue depth, consumer lag, stream throughput, processing latency |
+| **Service Health & Resources** | `/d/service-health` | Service up/down, CPU/memory, Go runtime stats, goroutine counts |
+| **API Performance** | `/d/api-performance` | HTTP request rate, latency by endpoint, error rate, status codes |
+| **Log Explorer** | `/d/log-explorer` | Loki-powered log search, per-service log panels, error analysis, correlation ID trace lookup |
+| **Notification System** | `/d/notification-system` | Combined system-wide view — delivery, queue, provider health |
+
+### Notification Overview Panels
+
+| Row | Panels |
+|-----|--------|
+| **Summary** | Today / This Week / This Month delivered (stat) — Today failed (stat, red threshold) — Success Rate % (stat) — Avg Delivery Time (stat) |
+| **Throughput** | Deliveries & failures per minute by channel (timeseries) — Delivery latency p50/p95/p99 (histogram quantiles) |
+| **Channel Breakdown** | Delivered by channel donut chart — Failure rate % by channel (timeseries) — Avg latency by channel (bar gauge) |
+| **Protection** | Rate limit hits/min — Circuit breaker opens/min — Cumulative all-time totals (delivered, failed, rate limited) |
+
+All panels support the `channel` template variable for filtering by email/sms/push.
+
 ## Alerting Rules
 
 | Alert | Severity | Condition |
@@ -580,7 +604,7 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 ├── observability/               # Monitoring, alerting, and tracing configs
 │   ├── prometheus/              # Scrape config + alert rules (all 4 services)
 │   ├── alertmanager/            # Slack/Teams webhook routing
-│   ├── grafana/                 # Dashboards + datasource provisioning
+│   ├── grafana/                 # 6 dashboards + datasource provisioning
 │   └── promtail/                # Docker log collection pipeline
 │   # Jaeger runs as a Docker container (jaegertracing/all-in-one)
 │

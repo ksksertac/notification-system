@@ -60,6 +60,8 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
   - Migration PgBouncer bypass: `DirectDSN()` method added to config; migrations now connect directly to PostgreSQL (`DB_DIRECT_HOST`) instead of through PgBouncer, avoiding advisory lock issues with transaction-pooling mode.
   - Design rationale documented: `idx:requeue`/`idx:retry` use persistent ZSET (crash-safe, no goroutine leak) instead of in-memory timers; scheduler uses Lua ZREM-claim (sorted sets have no consumer group) while consumer uses XREADGROUP (streams have native consumer groups).
 
+- **Notification Overview Dashboard**: Grafana dashboard with today/week/month delivery counts, failure rates, success rate %, avg delivery time, p50/p95/p99 latency percentiles, channel breakdown (donut chart + bar gauge), rate limit hits, circuit breaker opens, cumulative totals. Filterable by channel (email/sms/push).
+
 ## Key Commands Used
 
 ```bash
