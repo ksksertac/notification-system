@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	httpSwagger "github.com/swaggo/http-swagger"
 
 	_ "github.com/sertacyildirim/notification-system/notification-api/docs"
@@ -20,7 +20,7 @@ import (
 
 func NewRouter(
 	svc service.NotificationService,
-	redisClient *redis.Client,
+	redisClient goredis.UniversalClient,
 	consumer queue.Consumer,
 	metrics *handler.MetricsCollector,
 	wsHub *ws.Hub,

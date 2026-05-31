@@ -11,10 +11,10 @@ import (
 )
 
 type redisStreamPublisher struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
-func NewRedisPublisher(client *redis.Client) Publisher {
+func NewRedisPublisher(client redis.UniversalClient) Publisher {
 	return &redisStreamPublisher{client: client}
 }
 
@@ -91,10 +91,10 @@ func (p *redisStreamPublisher) PublishBatch(ctx context.Context, notifications [
 }
 
 type redisStreamConsumer struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
-func NewRedisConsumer(client *redis.Client) Consumer {
+func NewRedisConsumer(client redis.UniversalClient) Consumer {
 	return &redisStreamConsumer{client: client}
 }
 
@@ -185,10 +185,10 @@ func (c *redisStreamConsumer) Len(ctx context.Context, stream string) (int64, er
 }
 
 type redisStreamManager struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
-func NewRedisStreamManager(client *redis.Client) StreamManager {
+func NewRedisStreamManager(client redis.UniversalClient) StreamManager {
 	return &redisStreamManager{client: client}
 }
 

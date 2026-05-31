@@ -443,6 +443,38 @@ return 0  -- another pod already claimed it
 
 Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiting. Same guarantee as PostgreSQL's `SELECT ... FOR UPDATE`, but at Redis speed.
 
+## Redis Cluster Support
+
+The system supports both standalone Redis and Redis Cluster deployments. All services use `redis.UniversalClient` — the same interface works for both modes.
+
+### Configuration
+
+```bash
+# Standalone (default) — single Redis instance
+REDIS_ADDR=localhost:6379
+
+# Cluster — comma-separated list of seed nodes
+REDIS_CLUSTER_ADDRS=redis-1:6379,redis-2:6379,redis-3:6379
+```
+
+When `REDIS_CLUSTER_ADDRS` is set, the system connects in Cluster mode. Only one seed address is required — the client discovers the full topology automatically via `CLUSTER SLOTS`.
+
+### How It Works
+
+Per-notification keys use hash tags so all keys for a single notification land in the same hash slot:
+
+```
+n:{abc-123}    →  hash("abc-123") → slot 7638 → Shard 2
+dlq:{abc-123}  →  hash("abc-123") → slot 7638 → Shard 2  (same shard)
+p:{abc-123}    →  hash("abc-123") → slot 7638 → Shard 2  (same shard)
+```
+
+This allows Lua scripts to atomically operate on a notification's hash + related keys across Cluster shards.
+
+### Known Limitations
+
+Global index keys (`idx:status:*`, `idx:created_at`, `idx:retry`, `idx:requeue`, `persist:queue`, `schedule:pending`) are **not hash-tagged** — they live on a single shard. This is by design: these indexes span all notifications and cannot be split. In practice, a single Redis shard handles ~100K+ ZSET operations/second, which is sufficient for most workloads. If this becomes a bottleneck, indexes can be sharded by time bucket (e.g. `idx:status:pending:2026-05-31`).
+
 ## Tech Stack
 
 | Component | Technology |

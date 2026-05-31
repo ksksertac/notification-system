@@ -50,10 +50,10 @@ const (
 )
 
 type redisNotificationRepo struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
-func NewRedisNotificationRepo(client *redis.Client) NotificationRepository {
+func NewRedisNotificationRepo(client redis.UniversalClient) NotificationRepository {
 	return &redisNotificationRepo{client: client}
 }
 

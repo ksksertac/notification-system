@@ -9,7 +9,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 const (
@@ -19,7 +19,7 @@ const (
 	maxRetries = 15
 )
 
-func Run(ctx context.Context, redisClient *redis.Client, databaseURL string, migrationsPath string, logger *slog.Logger) error {
+func Run(ctx context.Context, redisClient goredis.UniversalClient, databaseURL string, migrationsPath string, logger *slog.Logger) error {
 	acquired, err := tryAcquireLock(ctx, redisClient)
 	if err != nil {
 		return fmt.Errorf("acquiring migration lock: %w", err)
@@ -41,11 +41,11 @@ func Run(ctx context.Context, redisClient *redis.Client, databaseURL string, mig
 	return waitForMigrations(ctx, redisClient, logger)
 }
 
-func tryAcquireLock(ctx context.Context, client *redis.Client) (bool, error) {
+func tryAcquireLock(ctx context.Context, client goredis.UniversalClient) (bool, error) {
 	return client.SetNX(ctx, lockKey, "leader", lockTTL).Result()
 }
 
-func releaseLock(ctx context.Context, client *redis.Client) {
+func releaseLock(ctx context.Context, client goredis.UniversalClient) {
 	client.Del(ctx, lockKey)
 }
 
@@ -63,7 +63,7 @@ func runMigrations(databaseURL string, migrationsPath string) error {
 	return nil
 }
 
-func waitForMigrations(ctx context.Context, client *redis.Client, logger *slog.Logger) error {
+func waitForMigrations(ctx context.Context, client goredis.UniversalClient, logger *slog.Logger) error {
 	for i := 0; i < maxRetries; i++ {
 		select {
 		case <-ctx.Done():

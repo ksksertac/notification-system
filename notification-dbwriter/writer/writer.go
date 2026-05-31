@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/shared/domain"
 	"github.com/sertacyildirim/notification-system/shared/repository"
 	"github.com/sertacyildirim/notification-system/shared/tracing"
@@ -20,7 +20,7 @@ const (
 )
 
 type Writer struct {
-	redis         *redis.Client
+	redis         goredis.UniversalClient
 	repo          repository.NotificationRepository
 	batchSize     int
 	flushInterval time.Duration
@@ -29,7 +29,7 @@ type Writer struct {
 }
 
 func New(
-	redisClient *redis.Client,
+	redisClient goredis.UniversalClient,
 	repo repository.NotificationRepository,
 	batchSize int,
 	flushInterval time.Duration,
@@ -116,7 +116,7 @@ type pendingMsg struct {
 }
 
 func (w *Writer) readBatch(ctx context.Context, consumer string) []pendingMsg {
-	results, err := w.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
+	results, err := w.redis.XReadGroup(ctx, &goredis.XReadGroupArgs{
 		Group:    groupName,
 		Consumer: consumer,
 		Streams:  []string{persistStream, ">"},
@@ -125,7 +125,7 @@ func (w *Writer) readBatch(ctx context.Context, consumer string) []pendingMsg {
 	}).Result()
 
 	if err != nil {
-		if err != redis.Nil {
+		if err != goredis.Nil {
 			w.logger.Error("failed to read from persist stream", "error", err)
 		}
 		return nil
@@ -284,7 +284,7 @@ func (w *Writer) flushUpdates(ctx context.Context, updates []map[string]string) 
 
 func (w *Writer) reclaimPending(ctx context.Context, consumerName string) {
 	for {
-		result, _, err := w.redis.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		result, _, err := w.redis.XAutoClaim(ctx, &goredis.XAutoClaimArgs{
 			Stream:   persistStream,
 			Group:    groupName,
 			Consumer: consumerName,
@@ -294,7 +294,7 @@ func (w *Writer) reclaimPending(ctx context.Context, consumerName string) {
 		}).Result()
 
 		if err != nil {
-			if err != redis.Nil {
+			if err != goredis.Nil {
 				w.logger.Error("reclaim pending failed", "error", err)
 			}
 			return

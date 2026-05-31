@@ -14,11 +14,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/notification-dbwriter/migrator"
 	"github.com/sertacyildirim/notification-system/notification-dbwriter/writer"
 	"github.com/sertacyildirim/notification-system/shared/config"
 	"github.com/sertacyildirim/notification-system/shared/database"
+	sharedredis "github.com/sertacyildirim/notification-system/shared/redis"
 	"github.com/sertacyildirim/notification-system/shared/repository"
 	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
@@ -54,11 +54,7 @@ func run() error {
 	defer db.Close()
 	logger.Info("connected to postgres")
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Addr,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
-	})
+	redisClient := sharedredis.NewClient(cfg.Redis)
 	defer redisClient.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

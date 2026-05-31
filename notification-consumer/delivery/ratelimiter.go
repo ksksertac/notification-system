@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 type RateLimiter interface {
@@ -13,12 +13,12 @@ type RateLimiter interface {
 }
 
 type redisRateLimiter struct {
-	client       *redis.Client
+	client       goredis.UniversalClient
 	limitPerSec  int
 	windowSize   time.Duration
 }
 
-func NewRedisRateLimiter(client *redis.Client, limitPerSecond int) RateLimiter {
+func NewRedisRateLimiter(client goredis.UniversalClient, limitPerSecond int) RateLimiter {
 	return &redisRateLimiter{
 		client:      client,
 		limitPerSec: limitPerSecond,
@@ -26,7 +26,7 @@ func NewRedisRateLimiter(client *redis.Client, limitPerSecond int) RateLimiter {
 	}
 }
 
-var slidingWindowScript = redis.NewScript(`
+var slidingWindowScript = goredis.NewScript(`
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])

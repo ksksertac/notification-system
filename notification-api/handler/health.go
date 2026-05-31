@@ -7,15 +7,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 type HealthHandler struct {
-	redis *redis.Client
+	redis goredis.UniversalClient
 	db    *sql.DB // optional — nil when Postgres is not used by this service
 }
 
-func NewHealthHandler(redis *redis.Client, db *sql.DB) *HealthHandler {
+func NewHealthHandler(redis goredis.UniversalClient, db *sql.DB) *HealthHandler {
 	return &HealthHandler{redis: redis, db: db}
 }
 

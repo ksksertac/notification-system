@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/shared/domain"
 	"golang.org/x/time/rate"
 )
 
-var apiRateLimitScript = redis.NewScript(`
+var apiRateLimitScript = goredis.NewScript(`
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
@@ -32,7 +32,7 @@ end
 return 0
 `)
 
-func RateLimit(redisClient *redis.Client, globalLimit, perUserLimit int) func(http.Handler) http.Handler {
+func RateLimit(redisClient goredis.UniversalClient, globalLimit, perUserLimit int) func(http.Handler) http.Handler {
 	globalLimiter := rate.NewLimiter(rate.Limit(globalLimit), globalLimit)
 	userLimiters := &sync.Map{}
 

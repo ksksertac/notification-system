@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 type CircuitState int
@@ -139,7 +139,7 @@ type CircuitBreakerRegistry struct {
 	mu          sync.RWMutex
 	breakers    map[string]CircuitBreaker
 	cfg         CircuitBreakerConfig
-	redisClient *redis.Client
+	redisClient goredis.UniversalClient
 }
 
 func NewCircuitBreakerRegistry(cfg CircuitBreakerConfig) *CircuitBreakerRegistry {

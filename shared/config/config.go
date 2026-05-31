@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,9 +67,10 @@ func (c DBConfig) DirectDSN() string {
 }
 
 type RedisConfig struct {
-	Addr     string
-	Password string
-	DB       int
+	Addr         string
+	Password     string
+	DB           int
+	ClusterAddrs []string
 }
 
 type QueueConfig struct {
@@ -139,9 +141,10 @@ func Load() (*Config, error) {
 			DirectHost:      os.Getenv("DB_DIRECT_HOST"),
 		},
 		Redis: RedisConfig{
-			Addr:     envOrDefault("REDIS_ADDR", "localhost:6379"),
-			Password: envOrDefault("REDIS_PASSWORD", ""),
-			DB:       envIntOrDefault("REDIS_DB", 0),
+			Addr:         envOrDefault("REDIS_ADDR", "localhost:6379"),
+			Password:     envOrDefault("REDIS_PASSWORD", ""),
+			DB:           envIntOrDefault("REDIS_DB", 0),
+			ClusterAddrs: envSlice("REDIS_CLUSTER_ADDRS"),
 		},
 		Queue: QueueConfig{
 			ConsumerGroup: envOrDefault("QUEUE_CONSUMER_GROUP", "notification-workers"),
@@ -241,6 +244,22 @@ func envIntOrDefault(key string, fallback int) int {
 		return fallback
 	}
 	return i
+}
+
+func envSlice(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func envDurationOrDefault(key string, fallback time.Duration) time.Duration {

@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/notification-consumer/delivery"
 	"github.com/sertacyildirim/notification-system/notification-consumer/metrics"
 	tmpl "github.com/sertacyildirim/notification-system/notification-consumer/template"
 	"github.com/sertacyildirim/notification-system/notification-consumer/worker"
 	"github.com/sertacyildirim/notification-system/shared/config"
 	"github.com/sertacyildirim/notification-system/shared/queue"
+	sharedredis "github.com/sertacyildirim/notification-system/shared/redis"
 	"github.com/sertacyildirim/notification-system/shared/repository"
 	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
@@ -47,11 +47,7 @@ func run() error {
 		defer shutdownTracer(context.Background())
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Addr,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
-	})
+	redisClient := sharedredis.NewClient(cfg.Redis)
 	defer redisClient.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

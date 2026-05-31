@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 const (
@@ -16,14 +16,14 @@ const (
 // RedisCircuitBreaker stores state in Redis so all pods share the same breaker.
 // Uses a Redis Hash per channel: `cb:{channel}` with fields: failures, state, last_failure_at, opened_at
 type RedisCircuitBreaker struct {
-	client       *redis.Client
+	client       goredis.UniversalClient
 	key          string
 	threshold    int
 	openDuration time.Duration
 	halfOpenMax  int
 }
 
-func NewRedisCircuitBreaker(client *redis.Client, channel string, cfg CircuitBreakerConfig) *RedisCircuitBreaker {
+func NewRedisCircuitBreaker(client goredis.UniversalClient, channel string, cfg CircuitBreakerConfig) *RedisCircuitBreaker {
 	return &RedisCircuitBreaker{
 		client:       client,
 		key:          cbKeyPrefix + channel,
@@ -33,7 +33,7 @@ func NewRedisCircuitBreaker(client *redis.Client, channel string, cfg CircuitBre
 	}
 }
 
-var cbAllowScript = redis.NewScript(`
+var cbAllowScript = goredis.NewScript(`
 local key = KEYS[1]
 local openDurationMs = tonumber(ARGV[1])
 local nowMs = tonumber(ARGV[2])
@@ -82,7 +82,7 @@ func (cb *RedisCircuitBreaker) Allow() bool {
 	return result == 1
 }
 
-var cbRecordSuccessScript = redis.NewScript(`
+var cbRecordSuccessScript = goredis.NewScript(`
 local key = KEYS[1]
 local state = redis.call('HGET', key, 'state')
 if state == 'half-open' then
@@ -104,7 +104,7 @@ func (cb *RedisCircuitBreaker) RecordSuccess() {
 	_ = cbRecordSuccessScript.Run(ctx, cb.client, []string{cb.key}).Err()
 }
 
-var cbRecordFailureScript = redis.NewScript(`
+var cbRecordFailureScript = goredis.NewScript(`
 local key = KEYS[1]
 local threshold = tonumber(ARGV[1])
 local nowMs = tonumber(ARGV[2])
@@ -141,7 +141,7 @@ func (cb *RedisCircuitBreaker) RecordFailure() {
 	).Err()
 }
 
-var cbStateScript = redis.NewScript(`
+var cbStateScript = goredis.NewScript(`
 local key = KEYS[1]
 local state = redis.call('HGET', key, 'state')
 if not state then
@@ -175,7 +175,7 @@ func (cb *RedisCircuitBreaker) String() string {
 // NewRedisCircuitBreakerRegistry creates a CircuitBreakerRegistry that uses
 // Redis-backed circuit breakers. If redisClient is nil, the registry falls back
 // to in-memory breakers.
-func NewRedisCircuitBreakerRegistry(redisClient *redis.Client, cfg CircuitBreakerConfig) *CircuitBreakerRegistry {
+func NewRedisCircuitBreakerRegistry(redisClient goredis.UniversalClient, cfg CircuitBreakerConfig) *CircuitBreakerRegistry {
 	return &CircuitBreakerRegistry{
 		breakers:    make(map[string]CircuitBreaker),
 		cfg:         cfg,

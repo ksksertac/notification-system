@@ -61,6 +61,7 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
   - Design rationale documented: `idx:requeue`/`idx:retry` use persistent ZSET (crash-safe, no goroutine leak) instead of in-memory timers; scheduler uses Lua ZREM-claim (sorted sets have no consumer group) while consumer uses XREADGROUP (streams have native consumer groups).
 
 - **Notification Overview Dashboard**: Grafana dashboard with today/week/month delivery counts, failure rates, success rate %, avg delivery time, p50/p95/p99 latency percentiles, channel breakdown (donut chart + bar gauge), rate limit hits, circuit breaker opens, cumulative totals. Filterable by channel (email/sms/push).
+- **Redis Cluster Support**: All services migrated from `*redis.Client` to `redis.UniversalClient` interface. New `shared/redis/client.go` factory creates standalone or cluster client based on `REDIS_CLUSTER_ADDRS` env var. Zero code change needed to switch between modes — same Lua scripts, same logic. Global indexes remain single-shard by design (documented limitation with scaling guidance).
 
 ## Key Commands Used
 
@@ -103,7 +104,7 @@ claude "move migrator from API to dbwriter"
 - Provider response bodies capped at 1 MB (`io.LimitReader`)
 - Docker multi-stage builds, GitHub Actions CI per service
 - Jaeger for distributed tracing (OTLP endpoint on 4317/4318, UI on 16686)
-- Redis Cluster-ready key format: per-notification keys use `n:{id}`, `dlq:{id}`, `p:{id}` hash tags
+- Redis Cluster support: all services use `redis.UniversalClient` interface — set `REDIS_CLUSTER_ADDRS` for Cluster mode, otherwise `REDIS_ADDR` for standalone. Per-notification keys use `n:{id}`, `dlq:{id}`, `p:{id}` hash tags for slot co-location. Global indexes (`idx:*`) are single-shard by design (documented limitation)
 - Migration bypasses PgBouncer via `DB_DIRECT_HOST` to avoid advisory lock issues with transaction-pooling
 - Tiered List merges hot+cold results when no date filter is provided (deduplicates by ID)
 - persist:queue capped at `~1000000` entries (MAXLEN) — monitor dbwriter lag to prevent silent trim loss

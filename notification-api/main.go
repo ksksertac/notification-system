@@ -11,13 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/notification-api/handler"
 	"github.com/sertacyildirim/notification-system/notification-api/service"
 	ws "github.com/sertacyildirim/notification-system/notification-api/websocket"
 	"github.com/sertacyildirim/notification-system/shared/config"
 	"github.com/sertacyildirim/notification-system/shared/database"
 	"github.com/sertacyildirim/notification-system/shared/queue"
+	sharedredis "github.com/sertacyildirim/notification-system/shared/redis"
 	"github.com/sertacyildirim/notification-system/shared/repository"
 	"github.com/sertacyildirim/notification-system/shared/tracing"
 )
@@ -54,11 +55,7 @@ func run() error {
 		defer shutdownTracer(context.Background())
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Addr,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
-	})
+	redisClient := sharedredis.NewClient(cfg.Redis)
 	defer redisClient.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -144,7 +141,7 @@ func run() error {
 	return nil
 }
 
-func waitForMigrations(client *redis.Client, logger *slog.Logger) error {
+func waitForMigrations(client goredis.UniversalClient, logger *slog.Logger) error {
 	const (
 		lockKey    = "migration-leader-lock"
 		maxRetries = 30
