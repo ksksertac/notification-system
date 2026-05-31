@@ -154,6 +154,12 @@ func (m *mockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt 
 func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	for _, id := range ids {
+		m.UpdateStatus(ctx, id, from, to)
+	}
+	return nil
+}
 
 type mockPublisher struct {
 	mu              sync.Mutex

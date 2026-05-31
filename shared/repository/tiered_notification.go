@@ -75,6 +75,10 @@ func (t *TieredNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID,
 	return t.hot.UpdateStatus(ctx, id, from, to)
 }
 
+func (t *TieredNotificationRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	return t.hot.UpdateStatusBatch(ctx, ids, from, to)
+}
+
 func (t *TieredNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
 	return t.hot.UpdateStatusWithDetails(ctx, id, from, to, providerMsgID, errorMsg)
 }

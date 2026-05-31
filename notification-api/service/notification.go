@@ -148,8 +148,16 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 	batchID := uuid.New()
 	now := time.Now().UTC()
 
-	notifications := make([]*domain.Notification, len(req.Notifications))
-	for i, r := range req.Notifications {
+	notifications := make([]*domain.Notification, 0, len(req.Notifications))
+	for _, r := range req.Notifications {
+		if r.IdempotencyKey != "" {
+			existing, err := s.repo.GetByIdempotencyKey(ctx, r.IdempotencyKey)
+			if err == nil && existing != nil {
+				notifications = append(notifications, existing)
+				continue
+			}
+		}
+
 		priority, _ := domain.PriorityFromString(r.Priority)
 
 		metadata := []byte("{}")
@@ -179,7 +187,7 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 			n.ScheduledAt = r.ScheduledAt
 		}
 
-		notifications[i] = n
+		notifications = append(notifications, n)
 	}
 
 	if err := s.repo.CreateBatch(ctx, notifications); err != nil {
@@ -194,13 +202,20 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 	}
 
 	if len(immediate) > 0 {
-		for _, n := range immediate {
-			s.repo.UpdateStatus(ctx, n.ID, domain.StatusPending, domain.StatusQueued)
-			n.Status = domain.StatusQueued
+		immediateIDs := make([]uuid.UUID, len(immediate))
+		for i, n := range immediate {
+			immediateIDs[i] = n.ID
+		}
+		if err := s.repo.UpdateStatusBatch(ctx, immediateIDs, domain.StatusPending, domain.StatusQueued); err != nil {
+			s.logger.Error("failed to batch update status to queued", "error", err)
+		} else {
+			for _, n := range immediate {
+				n.Status = domain.StatusQueued
+			}
 		}
 		if err := s.publisher.PublishBatch(ctx, immediate); err != nil {
+			s.repo.UpdateStatusBatch(ctx, immediateIDs, domain.StatusQueued, domain.StatusPending)
 			for _, n := range immediate {
-				s.repo.UpdateStatus(ctx, n.ID, domain.StatusQueued, domain.StatusPending)
 				n.Status = domain.StatusPending
 			}
 			s.logger.Warn("redis batch publish failed, scheduler will retry",

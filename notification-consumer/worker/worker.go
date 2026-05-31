@@ -185,11 +185,6 @@ func (wp *WorkerPool) pollStreams(ctx context.Context, consumerName string) bool
 			wp.processMessage(ctx, msg)
 			processed = true
 		}
-
-		if len(msgs) == 0 {
-			continue
-		}
-		break
 	}
 
 	return processed
@@ -266,7 +261,8 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 
 	allowed, err := wp.rateLimiter.Allow(ctx, string(msg.Channel))
 	if err != nil {
-		logger.Error("rate limiter error", "error", err)
+		logger.Warn("rate limiter error, failing open", "error", err)
+		allowed = true
 	}
 	if !allowed {
 		logger.Debug("rate limited, re-enqueuing")

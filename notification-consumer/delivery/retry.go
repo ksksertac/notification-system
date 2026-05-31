@@ -24,16 +24,8 @@ func NewExponentialBackoff(baseDelay, maxDelay time.Duration) RetryStrategy {
 }
 
 func (e *exponentialBackoff) NextDelay(attempt int) time.Duration {
-	delay := float64(e.baseDelay) * math.Pow(2, float64(attempt-1))
-
-	jitter := rand.Float64() * float64(e.baseDelay) * float64(attempt)
-	delay += jitter
-
-	if delay > float64(e.maxDelay) {
-		delay = float64(e.maxDelay)
-	}
-
-	return time.Duration(delay)
+	cap := math.Min(float64(e.maxDelay), float64(e.baseDelay)*math.Pow(2, float64(attempt-1)))
+	return time.Duration(rand.Float64() * cap)
 }
 
 func (e *exponentialBackoff) ShouldRetry(attempt int, maxAttempts int) bool {

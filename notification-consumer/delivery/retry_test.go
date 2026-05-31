@@ -1,30 +1,30 @@
 package delivery
 
 import (
+	"math"
 	"testing"
 	"time"
 )
 
-func TestExponentialBackoff_NextDelay(t *testing.T) {
-	eb := NewExponentialBackoff(2*time.Second, 60*time.Second)
+func TestExponentialBackoff_NextDelay_FullJitterRange(t *testing.T) {
+	baseDelay := 1 * time.Second
+	maxDelay := 60 * time.Second
+	eb := NewExponentialBackoff(baseDelay, maxDelay)
 
-	prev := time.Duration(0)
-	for attempt := 1; attempt <= 5; attempt++ {
-		delay := eb.NextDelay(attempt)
+	for attempt := 1; attempt <= 10; attempt++ {
+		expectedCap := math.Min(float64(maxDelay), float64(baseDelay)*math.Pow(2, float64(attempt-1)))
 
-		if delay <= 0 {
-			t.Errorf("attempt %d: delay should be positive, got %v", attempt, delay)
+		for i := 0; i < 100; i++ {
+			delay := eb.NextDelay(attempt)
+
+			if delay < 0 {
+				t.Errorf("attempt %d: delay should be >= 0, got %v", attempt, delay)
+			}
+
+			if float64(delay) > expectedCap {
+				t.Errorf("attempt %d: delay %v exceeds expected cap %v", attempt, delay, time.Duration(expectedCap))
+			}
 		}
-
-		if delay > 60*time.Second {
-			t.Errorf("attempt %d: delay %v exceeds max 60s", attempt, delay)
-		}
-
-		if attempt > 1 && delay < prev/2 {
-			t.Logf("attempt %d: delay %v (note: jitter may cause non-monotonic growth)", attempt, delay)
-		}
-
-		prev = delay
 	}
 }
 
@@ -32,9 +32,9 @@ func TestExponentialBackoff_ShouldRetry(t *testing.T) {
 	eb := NewExponentialBackoff(2*time.Second, 60*time.Second)
 
 	tests := []struct {
-		attempt    int
+		attempt     int
 		maxAttempts int
-		want       bool
+		want        bool
 	}{
 		{1, 5, true},
 		{4, 5, true},
@@ -54,32 +54,16 @@ func TestExponentialBackoff_CapsAtMaxDelay(t *testing.T) {
 	maxDelay := 10 * time.Second
 	eb := NewExponentialBackoff(1*time.Second, maxDelay)
 
-	// High attempt number should still be capped at maxDelay
+	// High attempt numbers should still be capped at maxDelay
 	for attempt := 10; attempt <= 20; attempt++ {
-		delay := eb.NextDelay(attempt)
-		if delay > maxDelay {
-			t.Errorf("attempt %d: delay %v exceeds maxDelay %v", attempt, delay, maxDelay)
-		}
-		if delay <= 0 {
-			t.Errorf("attempt %d: delay should be positive, got %v", attempt, delay)
-		}
-	}
-}
-
-func TestExponentialBackoff_FirstAttemptDelay(t *testing.T) {
-	baseDelay := 100 * time.Millisecond
-	maxDelay := 10 * time.Second
-	eb := NewExponentialBackoff(baseDelay, maxDelay)
-
-	// First attempt: base delay * 2^0 = baseDelay, plus jitter up to baseDelay*1
-	// So delay should be between baseDelay and 2*baseDelay
-	for i := 0; i < 100; i++ {
-		delay := eb.NextDelay(1)
-		if delay < baseDelay {
-			t.Errorf("first attempt delay %v should be >= baseDelay %v", delay, baseDelay)
-		}
-		if delay > 2*baseDelay {
-			t.Errorf("first attempt delay %v should be <= 2*baseDelay %v", delay, 2*baseDelay)
+		for i := 0; i < 50; i++ {
+			delay := eb.NextDelay(attempt)
+			if delay > maxDelay {
+				t.Errorf("attempt %d: delay %v exceeds maxDelay %v", attempt, delay, maxDelay)
+			}
+			if delay < 0 {
+				t.Errorf("attempt %d: delay should be >= 0, got %v", attempt, delay)
+			}
 		}
 	}
 }

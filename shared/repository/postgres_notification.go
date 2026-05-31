@@ -165,6 +165,23 @@ func (r *postgresNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUI
 	return rows > 0, err
 }
 
+func (r *postgresNotificationRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	for _, id := range ids {
+		_, err := r.db.ExecContext(ctx,
+			"UPDATE notifications SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
+			to, now, id, from,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *postgresNotificationRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
 	result, err := r.db.ExecContext(ctx,
 		`UPDATE notifications SET status = $1, provider_msg_id = COALESCE($2, provider_msg_id), error_message = COALESCE($3, error_message), updated_at = $4

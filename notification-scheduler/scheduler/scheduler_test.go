@@ -111,6 +111,9 @@ func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.No
 	}
 	return nil, nil
 }
+func (m *mockRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	return nil
+}
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
 

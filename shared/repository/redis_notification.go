@@ -30,8 +30,9 @@ const (
 	KeyDLQ          = "dlq:"
 	KeyPersisted    = "persisted:"
 
-	IdemKeyTTL   = 24 * time.Hour
-	PersistedTTL = 2 * time.Hour
+	IdemKeyTTL          = 7 * 24 * time.Hour
+	PersistedTTL        = 2 * time.Hour
+	NotificationHashTTL = 48 * time.Hour
 )
 
 type redisNotificationRepo struct {
@@ -176,8 +177,8 @@ func mapToNotification(vals map[string]string) (*domain.Notification, error) {
 // Optional KEYS (positional, empty string if unused):
 //        [6]=idx:idempotency:<key>, [7]=idx:batch:<batchID>, [8]=schedule:pending
 // ARGV: [1]=member (id string), [2]=score (created_at nanos), [3]=idemKeyTTL seconds (0 if none),
-//        [4]=scheduledAtScore (0 if none), [5]=persistEvent JSON,
-//        [6..N]=field/value pairs for HSET
+//        [4]=scheduledAtScore (0 if none), [5]=persistEvent JSON, [6]=hashTTL seconds,
+//        [7..N]=field/value pairs for HSET
 var createScript = redis.NewScript(`
 local key = KEYS[1]
 
@@ -186,6 +187,8 @@ local score = tonumber(ARGV[2])
 local idemTTL = tonumber(ARGV[3])
 local schedScore = tonumber(ARGV[4])
 local persistEvt = ARGV[5]
+local hashTTLStr = ARGV[6]
+local hashTTL = tonumber(hashTTLStr)
 
 -- Atomic idempotency check before any writes
 if KEYS[6] ~= '' and idemTTL > 0 then
@@ -201,8 +204,13 @@ if exists == 1 then
 end
 
 -- Write hash fields
-for i = 6, #ARGV, 2 do
+for i = 7, #ARGV, 2 do
     redis.call('HSET', key, ARGV[i], ARGV[i+1])
+end
+
+-- Set TTL on notification hash to prevent unbounded growth
+if hashTTL > 0 then
+    redis.call('EXPIRE', key, hashTTLStr)
 end
 
 -- Status index
@@ -287,8 +295,10 @@ func (r *redisNotificationRepo) Create(ctx context.Context, n *domain.Notificati
 		idemTTLSeconds = int64(IdemKeyTTL.Seconds())
 	}
 
-	args := make([]interface{}, 0, 5+len(fields)*2)
-	args = append(args, idStr, score, idemTTLSeconds, scheduleScore, string(persistData))
+	hashTTLSeconds := int64(NotificationHashTTL.Seconds())
+
+	args := make([]interface{}, 0, 6+len(fields)*2)
+	args = append(args, idStr, score, idemTTLSeconds, scheduleScore, string(persistData), hashTTLSeconds)
 	for k, v := range fields {
 		args = append(args, k, v)
 	}
@@ -376,8 +386,9 @@ func (r *redisNotificationRepo) CreateBatch(ctx context.Context, notifications [
 				idemTTLSeconds = int64(IdemKeyTTL.Seconds())
 			}
 
-			args := make([]interface{}, 0, 5+len(fields)*2)
-			args = append(args, idStr, score, idemTTLSeconds, scheduleScore, string(persistData))
+			hashTTLSeconds := int64(NotificationHashTTL.Seconds())
+			args := make([]interface{}, 0, 6+len(fields)*2)
+			args = append(args, idStr, score, idemTTLSeconds, scheduleScore, string(persistData), hashTTLSeconds)
 			for k, v := range fields {
 				args = append(args, k, v)
 			}
@@ -639,6 +650,46 @@ func (r *redisNotificationRepo) UpdateStatus(ctx context.Context, id uuid.UUID, 
 	}
 
 	return true, nil
+}
+
+func (r *redisNotificationRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	ctx, span := tracing.StartSpan(ctx, "redis.UpdateStatusBatch")
+	defer span.End()
+	tracing.SetIntAttr(span, "batch.size", len(ids))
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	idxOld := KeyIdxStatus + string(from)
+	idxNew := KeyIdxStatus + string(to)
+
+	pipe := r.client.Pipeline()
+	for _, id := range ids {
+		idStr := id.String()
+		key := notificationKey(id)
+		pipe.EvalSha(ctx, updateStatusScript.Hash(), []string{key, idxOld, idxNew, KeyIdxCreatedAt},
+			string(from), string(to), now, idStr)
+	}
+	results, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		tracing.RecordError(span, err)
+		return fmt.Errorf("batch update status: %w", err)
+	}
+
+	persistPipe := r.client.Pipeline()
+	for i, id := range ids {
+		if results[i].Err() != nil {
+			continue
+		}
+		r.publishPersistEvent(ctx, persistPipe, "update_status", nil, map[string]string{
+			"id":   id.String(),
+			"from": string(from),
+			"to":   string(to),
+		})
+	}
+	if _, err := persistPipe.Exec(ctx); err != nil {
+		return fmt.Errorf("batch update status persist: %w", err)
+	}
+
+	return nil
 }
 
 // updateStatusWithDetailsScript atomically checks status, updates hash with details, and moves index.
@@ -914,8 +965,15 @@ func (r *redisNotificationRepo) GetScheduledReady(ctx context.Context, limit int
 	return r.getNotificationsByIDs(ctx, ids)
 }
 
+// claimScheduledScript atomically claims scheduled notifications:
+// status change, schedule removal, index updates, and persist events all in one Lua script.
+// KEYS: [1]=schedule:pending, [2]=idx:status:pending, [3]=idx:status:queued, [4]=idx:created_at, [5]=persist:queue
 var claimScheduledScript = redis.NewScript(`
 local scheduleKey = KEYS[1]
+local pendingIdx = KEYS[2]
+local queuedIdx = KEYS[3]
+local idxCreatedAt = KEYS[4]
+local persistQueue = KEYS[5]
 local now = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
 local nowStr = ARGV[3]
@@ -929,6 +987,16 @@ for _, id in ipairs(scheduled) do
     if status == 'pending' then
         redis.call('HSET', nKey, 'status', 'queued', 'updated_at', nowStr)
         redis.call('ZREM', scheduleKey, id)
+
+        local score = redis.call('ZSCORE', idxCreatedAt, id)
+        if not score then score = 0 end
+
+        redis.call('ZREM', pendingIdx, id)
+        redis.call('ZADD', queuedIdx, score, id)
+
+        local evt = cjson.encode({action='update_status', extra={id=id, from='pending', to='queued'}, timestamp=nowStr})
+        redis.call('XADD', persistQueue, 'MAXLEN', '~', '100000', '*', 'event', evt)
+
         table.insert(claimed, id)
     end
 end
@@ -941,7 +1009,14 @@ func (r *redisNotificationRepo) ClaimScheduledBatch(ctx context.Context, limit i
 	nowNano := now.UnixNano()
 	nowStr := now.Format(time.RFC3339Nano)
 
-	ids, err := claimScheduledScript.Run(ctx, r.client, []string{KeySchedule},
+	ids, err := claimScheduledScript.Run(ctx, r.client,
+		[]string{
+			KeySchedule,
+			KeyIdxStatus + string(domain.StatusPending),
+			KeyIdxStatus + string(domain.StatusQueued),
+			KeyIdxCreatedAt,
+			KeyPersistQueue,
+		},
 		nowNano, limit, nowStr,
 	).StringSlice()
 	if err != nil && err != redis.Nil {
@@ -952,29 +1027,7 @@ func (r *redisNotificationRepo) ClaimScheduledBatch(ctx context.Context, limit i
 		return nil, nil
 	}
 
-	notifications, err := r.getNotificationsByIDs(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-
-	pipe := r.client.Pipeline()
-	for _, n := range notifications {
-		idStr := n.ID.String()
-		score := float64(n.CreatedAt.UnixNano())
-		pipe.ZRem(ctx, KeyIdxStatus+string(domain.StatusPending), idStr)
-		pipe.ZAdd(ctx, KeyIdxStatus+string(domain.StatusQueued), redis.Z{Score: score, Member: idStr})
-
-		r.publishPersistEvent(ctx, pipe, "update_status", nil, map[string]string{
-			"id":   idStr,
-			"from": string(domain.StatusPending),
-			"to":   string(domain.StatusQueued),
-		})
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("claim scheduled indexes: %w", err)
-	}
-
-	return notifications, nil
+	return r.getNotificationsByIDs(ctx, ids)
 }
 
 // recoverStuckScript atomically finds stuck notifications, updates their status,

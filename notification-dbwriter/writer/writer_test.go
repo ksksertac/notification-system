@@ -158,6 +158,9 @@ func (m *mockRepo) AddToRequeueSet(_ context.Context, _ uuid.UUID, _ time.Time) 
 func (m *mockRepo) GetRequeueReady(_ context.Context, _ int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockRepo) UpdateStatusBatch(_ context.Context, _ []uuid.UUID, _, _ domain.Status) error {
+	return nil
+}
 
 // Thread-safe getters for assertions
 

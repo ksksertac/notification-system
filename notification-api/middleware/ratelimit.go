@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sertacyildirim/notification-system/shared/domain"
+	"golang.org/x/time/rate"
 )
 
 var apiRateLimitScript = redis.NewScript(`
@@ -30,6 +33,9 @@ return 0
 `)
 
 func RateLimit(redisClient *redis.Client, globalLimit, perUserLimit int) func(http.Handler) http.Handler {
+	globalLimiter := rate.NewLimiter(rate.Limit(globalLimit), globalLimit)
+	userLimiters := &sync.Map{}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
@@ -41,7 +47,15 @@ func RateLimit(redisClient *redis.Client, globalLimit, perUserLimit int) func(ht
 				userKey := fmt.Sprintf("ratelimit:api:user:%s", apiKey)
 				result, err := apiRateLimitScript.Run(ctx, redisClient, []string{userKey},
 					perUserLimit, 1000, now).Int64()
-				if err == nil && result == 0 {
+				if err != nil {
+					slog.Warn("rate limiter redis error for user key, using in-memory fallback", "error", err, "apiKey", apiKey)
+					limiterVal, _ := userLimiters.LoadOrStore(apiKey, rate.NewLimiter(rate.Limit(perUserLimit), perUserLimit))
+					limiter := limiterVal.(*rate.Limiter)
+					if !limiter.Allow() {
+						rateLimitResponse(w, r, perUserLimit)
+						return
+					}
+				} else if result == 0 {
 					rateLimitResponse(w, r, perUserLimit)
 					return
 				}
@@ -52,6 +66,11 @@ func RateLimit(redisClient *redis.Client, globalLimit, perUserLimit int) func(ht
 				globalLimit, 1000, now).Int64()
 
 			if err != nil {
+				slog.Warn("rate limiter redis error, using in-memory fallback", "error", err)
+				if !globalLimiter.Allow() {
+					rateLimitResponse(w, r, globalLimit)
+					return
+				}
 				next.ServeHTTP(w, r)
 				return
 			}

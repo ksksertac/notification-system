@@ -41,6 +41,17 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 - **At-Least-Once Delivery Documentation**: Explicitly documented at-least-once delivery semantics in DELIVERY.md. Clarified that CAS provides exactly-once queue-level processing, not exactly-once end-to-end delivery.
 - **Provider Dedup Key**: Webhook provider now includes `notification_id` in outbound JSON payload, enabling provider-side deduplication for at-least-once delivery scenarios.
 
+- **Architectural Hardening (9 fixes)**:
+  - (1) `claimScheduledScript` now performs index updates + persist events atomically inside Lua — eliminates crash-window between status change and index update.
+  - (2) Consumer rate limiter changed to fail-open (was fail-closed on Redis error). API rate limiter now has in-memory token bucket fallback via `golang.org/x/time/rate` when Redis is down.
+  - (3) Batch `UpdateStatus` via pipelined Lua scripts — replaces N individual calls with one pipeline.
+  - (4) Idempotency TTL extended from 24h to 7 days. Batch `CreateBatch` now checks idempotency keys before insert. Idempotency hits return `200 OK` + `X-Idempotent-Replayed: true` header (was `201 Created`).
+  - (5) Notification hash now gets 48h TTL (`EXPIRE`) set atomically in the create Lua script — prevents unbounded Redis memory growth.
+  - (6) Deficit round-robin no longer breaks after first stream returns messages — all streams are served proportionally per poll cycle, preventing low-priority starvation under sustained high traffic.
+  - (7) `getRetryReadyScript` and `getRequeueReadyScript` already atomic Lua — confirmed no race. `claimScheduledScript` was the gap (fixed in #1).
+  - (8) Retry jitter changed from additive (`rand * base * attempt`) to AWS full jitter (`rand * min(cap, base * 2^attempt)`). Eliminates thundering herd at low attempts.
+  - (9) API rate limiter: per-user in-memory fallback limiter added, Redis errors now logged via `slog.Warn`.
+
 ## Key Commands Used
 
 ```bash
@@ -77,7 +88,7 @@ claude "move migrator from API to dbwriter"
 - W3C Trace Context (`traceparent`/`tracestate`) propagated through Redis Stream messages and persist events for end-to-end Jaeger traces
 - Webhook HTTP client instrumented with `otelhttp.NewTransport` for automatic outbound span creation
 - Re-enqueue via persistent `idx:requeue` ZSET (scheduler-driven, crash-safe)
-- Deficit round-robin scheduling for priority queues (prevents low-priority starvation)
+- Deficit round-robin scheduling for priority queues (all streams served proportionally per poll — no starvation)
 - Circuit breaker re-enqueue capped at `MaxRequeueCount` (50) to prevent infinite loops
 - Provider response bodies capped at 1 MB (`io.LimitReader`)
 - Docker multi-stage builds, GitHub Actions CI per service

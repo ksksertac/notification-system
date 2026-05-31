@@ -153,6 +153,9 @@ func (m *mockNotificationRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID
 func (m *mockNotificationRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockNotificationRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	return nil
+}
 
 func newTestNotification() *domain.Notification {
 	return &domain.Notification{

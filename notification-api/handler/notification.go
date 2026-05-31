@@ -55,6 +55,11 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if idempotencyKey != "" && n.CreatedAt.Before(time.Now().Add(-1*time.Second)) {
+		w.Header().Set("X-Idempotent-Replayed", "true")
+		writeSuccess(w, r, http.StatusOK, domain.ToNotificationResponse(n))
+		return
+	}
 	writeSuccess(w, r, http.StatusCreated, domain.ToNotificationResponse(n))
 }
 

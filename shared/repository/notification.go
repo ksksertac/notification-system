@@ -19,6 +19,7 @@ type NotificationRepository interface {
 	GetByIdempotencyKey(ctx context.Context, key string) (*domain.Notification, error)
 	List(ctx context.Context, req domain.ListNotificationsRequest) ([]*domain.Notification, int64, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, from, to domain.Status) (bool, error)
+	UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error
 	UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error)
 	IncrementRetry(ctx context.Context, id uuid.UUID, nextRetryAt time.Time, errorMsg string) error
 	MoveToDLQ(ctx context.Context, n *domain.Notification, errorMsg string) error

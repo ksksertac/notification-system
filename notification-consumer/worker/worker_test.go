@@ -234,6 +234,9 @@ func (m *mockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, requeueAt 
 func (m *mockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (m *mockRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	return nil
+}
 
 var _ repository.NotificationRepository = (*mockRepo)(nil)
 
@@ -1262,14 +1265,12 @@ func TestProcessMessage_RateLimitError(t *testing.T) {
 	}
 
 	consumer := &mockConsumer{}
-	publisher := &mockPublisher{}
 	metrics := &mockMetrics{}
 
-	// Rate limiter returns an error AND allowed=false
+	// Rate limiter returns an error — should fail-open and proceed with delivery
 	wp := newTestWorkerPool(func(o *testPoolOpts) {
 		o.repo = repo
 		o.consumer = consumer
-		o.publisher = publisher
 		o.rateLimiter = &mockRateLimiter{allowed: false, err: errors.New("redis timeout")}
 	})
 	wp.metrics = metrics
@@ -1286,26 +1287,36 @@ func TestProcessMessage_RateLimitError(t *testing.T) {
 	ctx := context.Background()
 	wp.processMessage(ctx, msg)
 
-	// Verify message was acked (rate limiter error with !allowed leads to re-enqueue path)
+	// Verify message was acked
 	consumer.mu.Lock()
 	if len(consumer.ackCalls) == 0 {
-		t.Error("expected message to be acknowledged after rate limiter error")
+		t.Error("expected message to be acknowledged after rate limiter error (fail-open)")
 	}
 	consumer.mu.Unlock()
 
-	// Verify rate limit hit metric recorded
+	// Fail-open: rate limit hit metric should NOT be recorded
 	metrics.mu.Lock()
-	if metrics.rateLimitHits != 1 {
-		t.Errorf("expected 1 rate limit hit metric, got %d", metrics.rateLimitHits)
+	if metrics.rateLimitHits != 0 {
+		t.Errorf("expected 0 rate limit hit metrics (fail-open), got %d", metrics.rateLimitHits)
 	}
 	metrics.mu.Unlock()
 
-	// Verify re-enqueue was added to persistent requeue set
+	// Fail-open: notification should be delivered, not re-enqueued
 	repo.mu.Lock()
-	if len(repo.requeueSetIDs) != 1 {
-		t.Errorf("expected 1 requeue set entry after rate limiter error, got %d", len(repo.requeueSetIDs))
+	if len(repo.requeueSetIDs) != 0 {
+		t.Errorf("expected 0 requeue set entries (fail-open), got %d", len(repo.requeueSetIDs))
+	}
+	foundDelivered := false
+	for _, su := range repo.statusUpdates {
+		if su.id == nID && su.to == domain.StatusDelivered {
+			foundDelivered = true
+			break
+		}
 	}
 	repo.mu.Unlock()
+	if !foundDelivered {
+		t.Error("expected notification to be delivered when rate limiter fails open")
+	}
 }
 
 func TestProcessMessage_CircuitBreakerOpen(t *testing.T) {
@@ -1835,6 +1846,9 @@ func (m *errorMockRepo) AddToRequeueSet(ctx context.Context, id uuid.UUID, reque
 }
 func (m *errorMockRepo) GetRequeueReady(ctx context.Context, limit int) ([]*domain.Notification, error) {
 	return nil, nil
+}
+func (m *errorMockRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
+	return nil
 }
 
 var _ repository.NotificationRepository = (*errorMockRepo)(nil)
@@ -2483,5 +2497,9 @@ func (r *concurrentCASRepo) UpdateStatusWithDetails(ctx context.Context, id uuid
 }
 
 func (r *concurrentCASRepo) UpdateRequeueCount(ctx context.Context, id uuid.UUID, count int) error {
+	return nil
+}
+
+func (r *concurrentCASRepo) UpdateStatusBatch(ctx context.Context, ids []uuid.UUID, from, to domain.Status) error {
 	return nil
 }
