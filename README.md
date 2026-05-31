@@ -28,7 +28,7 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Immediate 
               │  idx:channel:{ch}   — Sorted Set       │            ▼
               │  idx:created_at     — Sorted Set       │   ┌─────────────────────────────┐
               │  idx:batch:{batchId}— Set              │   │  notification-dbwriter       │
-              │  idx:idempotency:{k}— String (TTL 24h) │   │  (x N replicas)             │
+              │  idx:idempotency:{k}— String (TTL 7d)  │   │  (x N replicas)             │
               │  schedule:pending   — Sorted Set       │   │                             │
               │                                        │   │  Auto-migration (leader lock)│
               │  notifications:high │ :normal │ :low   │   │  Consumer group on           │
@@ -373,7 +373,7 @@ With buffer:     1000 requests → 1000 HSET (immediate) + 2 pipeline XADD → 1
 - Stream publish is batched on **size threshold** (500 items) or **time threshold** (50ms) — whichever comes first
 - If pod crashes before stream publish, notification stays `pending` — scheduler recovers within ~30 seconds
 - Requests with `Idempotency-Key` bypass the buffer and publish immediately (need instant visibility for duplicate detection)
-- Requests with `Idempotency-Key` check `idx:idempotency:{key}` (String with 24h TTL) for duplicate detection (supported on both single and batch create)
+- Requests with `Idempotency-Key` check `idx:idempotency:{key}` (String with 7-day TTL) for duplicate detection (supported on both single and batch create)
 
 **Trade-off:** Idempotent requests bypass the buffer for correctness (atomic dedup check), so they do not benefit from batched stream publish. In practice, burst traffic that uses idempotency keys gets individual stream publishes rather than batched ones.
 
@@ -386,7 +386,7 @@ With buffer:     1000 requests → 1000 HSET (immediate) + 2 pipeline XADD → 1
 | `idx:channel:{channel}` | Sorted Set | Index by channel (score=created_at, member=ID) |
 | `idx:created_at` | Sorted Set | Global time-ordered index |
 | `idx:batch:{batchId}` | Set | Set of notification IDs in a batch |
-| `idx:idempotency:{key}` | String (TTL 24h) | Idempotency deduplication |
+| `idx:idempotency:{key}` | String (TTL 7d) | Idempotency deduplication |
 | `schedule:pending` | Sorted Set | Scheduled notifications (score=scheduled_at) |
 | `persist:queue` | Stream | Async persistence feed for dbwriter |
 | `notifications:high` | Stream | High-priority delivery queue |
@@ -516,10 +516,10 @@ Used for: status transitions (CAS), scheduled claim, stuck recovery, rate limiti
 | Rate limiting (100 msg/s/channel) | ✅ | Sliding window Lua script per channel |
 | Priority queue (high/normal/low) | ✅ | 3 streams + deficit round-robin scheduling |
 | Content validation | ✅ | SMS: 160, Email: 10K, Push: 256 chars; recipient format per channel |
-| Idempotency | ✅ | Atomic Lua check-and-create, 24h TTL |
+| Idempotency | ✅ | Atomic Lua check-and-create, 7-day TTL |
 | **Delivery & Retry** | | |
 | Webhook.site integration | ✅ | Configurable POST endpoint + mock provider (`PROVIDER_TYPE=mock`) |
-| Exponential backoff + jitter | ✅ | `baseDelay * 2^(attempt-1) + jitter`, max delay cap |
+| Exponential backoff + jitter | ✅ | AWS full jitter: `rand * min(cap, base * 2^attempt)` |
 | Circuit breaker | ✅ | Dual: in-memory + Redis-distributed, backoff requeue |
 | Dead Letter Queue | ✅ | After max retries, non-retryable errors, or max requeue count |
 | **Observability** | | |

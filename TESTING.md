@@ -204,7 +204,7 @@ go tool cover -func=coverage.out | grep total
 | Auth Middleware | API key presence, timing-safe comparison, 401 on invalid/missing key |
 | Write Buffer | Batching behavior, flush with 30s context timeout, ordering |
 | Rate Limiter | Per-user limits, global limits, sliding window accuracy, burst handling |
-| Idempotency | Same key returns same response, expiry after 24h, concurrent same-key |
+| Idempotency | Same key returns same response, expiry after 7 days, concurrent same-key |
 | WebSocket | Origin validation against allowlist, ping/pong heartbeat, connection limit |
 | Correlation ID | Validation (max 64 chars, alphanumeric + hyphens), replacement of invalid IDs |
 | Health | Redis + PostgreSQL ping (when available) |

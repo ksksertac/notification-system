@@ -40,7 +40,7 @@ Redis handles all hot-path operations (writes, status updates, lookups for last 
 ### Phase 2: API Service
 - [x] REST API with Chi router (CRUD, batch, cancel, list with pagination)
 - [x] Input validation (E.164 phone, email format, content length)
-- [x] Idempotency via Redis String with 24h TTL
+- [x] Idempotency via Redis String with 7-day TTL
 - [x] Write buffer for batch coalescing (500 items / 50ms flush)
 - [x] Global rate limiter (Redis Lua sliding window, 1000 req/s)
 - [x] Optimistic publish pattern (Redis write → best-effort stream publish)
