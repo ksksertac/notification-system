@@ -1940,13 +1940,24 @@ type updateDetailsFailRepo struct {
 	*mockRepo
 	updateErr error
 	updateOk  bool
+	callCount int
+	mu2       sync.Mutex
 }
 
 func (m *updateDetailsFailRepo) UpdateStatusWithDetails(ctx context.Context, id uuid.UUID, from, to domain.Status, providerMsgID *string, errorMsg *string) (bool, error) {
 	m.mockRepo.mu.Lock()
 	m.mockRepo.statusUpdates = append(m.mockRepo.statusUpdates, statusUpdate{id: id, from: from, to: to})
 	m.mockRepo.mu.Unlock()
-	return m.updateOk, m.updateErr
+
+	m.mu2.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu2.Unlock()
+
+	if count == 1 {
+		return m.updateOk, m.updateErr
+	}
+	return true, nil
 }
 
 var _ repository.NotificationRepository = (*updateDetailsFailRepo)(nil)
