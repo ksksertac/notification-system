@@ -342,9 +342,13 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 			return
 		}
 		if current != nil && !current.Status.IsFinal() {
-			_, retryErr := wp.repo.UpdateStatusWithDetails(ctx, msg.NotificationID, current.Status, domain.StatusDelivered, &providerID, nil)
+			retryOk, retryErr := wp.repo.UpdateStatusWithDetails(ctx, msg.NotificationID, current.Status, domain.StatusDelivered, &providerID, nil)
 			if retryErr != nil {
 				logger.Error("failed to force status to delivered, not ACKing", "error", retryErr)
+				return
+			}
+			if !retryOk {
+				logger.Error("CAS retry also failed, status changed again, not ACKing")
 				return
 			}
 			logger.Warn("forced status to delivered after CAS miss", "previous_status", current.Status)
