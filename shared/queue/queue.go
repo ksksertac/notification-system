@@ -37,6 +37,7 @@ type Message struct {
 	Content        string
 	Priority       domain.Priority
 	RetryCount     int
+	DeliveryCount  int64
 	CorrelationID  string
 	Traceparent    string
 	Tracestate     string

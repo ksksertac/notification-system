@@ -69,6 +69,7 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
   - `reEnqueue` now returns `error` so callers can gate ACK on success.
   - Test `TestProcessMessage_UpdateStatusWithDetailsError` updated to assert no-ACK on failure.
   - CAS miss on `UpdateStatusWithDetails(processing→delivered)` now retries: re-reads current status, if non-final forces delivered write. Both error and bool result of retry are checked — second CAS miss also aborts without ACK. Prevents losing delivered record when scheduler concurrently resets status.
+  - Max delivery count safety valve: messages redelivered ≥10 times (via XCLAIM) are force-ACKed and moved to DLQ. Prevents infinite redelivery loops when side effects persistently fail. `DeliveryCount` field added to `queue.Message`, populated from XPENDING retry count in `ClaimStale`.
 - **WebSocket Auth**: `/ws` endpoint moved behind `APIKeyAuth` middleware. Supports both `X-API-Key` header and `?api_key=` query parameter (browsers cannot set headers on WebSocket upgrade).
 - **API Key Log Leak Fix**: Removed plaintext API key from rate limiter Redis fallback warning log (`ratelimit.go`).
 - **K8s Secret Hygiene**: Moved `DB_PASSWORD`, `REDIS_PASSWORD`, `API_KEY` from ConfigMap to K8s Secret across all 4 service manifests. Deployments now mount both `configMapRef` and `secretRef`.

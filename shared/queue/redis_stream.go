@@ -152,8 +152,10 @@ func (c *redisStreamConsumer) ClaimStale(ctx context.Context, stream string, gro
 	}
 
 	ids := make([]string, len(pending))
+	deliveryCounts := make(map[string]int64, len(pending))
 	for i, p := range pending {
 		ids[i] = p.ID
+		deliveryCounts[p.ID] = p.RetryCount
 	}
 
 	claimed, err := c.client.XClaim(ctx, &redis.XClaimArgs{
@@ -174,6 +176,7 @@ func (c *redisStreamConsumer) ClaimStale(ctx context.Context, stream string, gro
 		if err != nil {
 			continue
 		}
+		m.DeliveryCount = deliveryCounts[msg.ID]
 		messages = append(messages, m)
 	}
 

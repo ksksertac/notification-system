@@ -206,6 +206,8 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		tracing.SetAttr(span, "correlation_id", msg.CorrelationID)
 	}
 
+	const maxDeliveryCount int64 = 10
+
 	startTime := time.Now()
 	logger := wp.logger.With(
 		"notification_id", msg.NotificationID,
@@ -213,6 +215,17 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		"stream", msg.StreamName,
 		"correlation_id", msg.CorrelationID,
 	)
+
+	if msg.DeliveryCount >= maxDeliveryCount {
+		logger.Error("max delivery count exceeded, force ACKing and moving to DLQ",
+			"delivery_count", msg.DeliveryCount)
+		n, _ := wp.repo.GetByID(ctx, msg.NotificationID)
+		if n != nil && !n.Status.IsFinal() {
+			_ = wp.repo.MoveToDLQ(ctx, n, "max stream delivery count exceeded")
+		}
+		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
+		return
+	}
 
 	n, err := wp.repo.GetByID(ctx, msg.NotificationID)
 	if err != nil {
