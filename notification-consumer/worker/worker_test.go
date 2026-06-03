@@ -1940,6 +1940,8 @@ type updateDetailsFailRepo struct {
 	*mockRepo
 	updateErr error
 	updateOk  bool
+	retryOk   *bool
+	retryErr  error
 	callCount int
 	mu2       sync.Mutex
 }
@@ -1956,6 +1958,9 @@ func (m *updateDetailsFailRepo) UpdateStatusWithDetails(ctx context.Context, id 
 
 	if count == 1 {
 		return m.updateOk, m.updateErr
+	}
+	if m.retryOk != nil {
+		return *m.retryOk, m.retryErr
 	}
 	return true, nil
 }
@@ -2076,6 +2081,58 @@ func TestProcessMessage_UpdateStatusWithDetailsCASFailure(t *testing.T) {
 		t.Error("expected message to be acknowledged even when CAS fails")
 	}
 	consumer.mu.Unlock()
+}
+
+func TestProcessMessage_UpdateStatusWithDetailsCASRetryAlsoFails(t *testing.T) {
+	nID := uuid.New()
+	baseRepo := newMockRepo()
+	baseRepo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelSMS,
+		Priority: domain.PriorityNormal,
+	}
+
+	retryFalse := false
+	failRepo := &updateDetailsFailRepo{
+		mockRepo:  baseRepo,
+		updateErr: nil,
+		updateOk:  false,
+		retryOk:   &retryFalse,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{ProviderMsgID: "msg-double-cas"}, nil
+		},
+	}
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.provider = provider
+		o.consumer = consumer
+	})
+	wp.repo = failRepo
+
+	msg := queue.Message{
+		ID:             "msg-double-cas-fail",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "Double CAS fail test",
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	consumer.mu.Lock()
+	acked := len(consumer.ackCalls)
+	consumer.mu.Unlock()
+	if acked != 0 {
+		t.Error("expected message NOT to be acknowledged when both CAS attempts fail")
+	}
 }
 
 func TestPollStreams_DeficitRoundRobin_NoStarvation(t *testing.T) {
