@@ -217,11 +217,18 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 	)
 
 	if msg.DeliveryCount >= maxDeliveryCount {
-		logger.Error("max delivery count exceeded, force ACKing and moving to DLQ",
+		logger.Error("max delivery count exceeded, moving to DLQ",
 			"delivery_count", msg.DeliveryCount)
-		n, _ := wp.repo.GetByID(ctx, msg.NotificationID)
+		n, err := wp.repo.GetByID(ctx, msg.NotificationID)
+		if err != nil {
+			logger.Error("failed to get notification for DLQ at max delivery, not ACKing", "error", err)
+			return
+		}
 		if n != nil && !n.Status.IsFinal() {
-			_ = wp.repo.MoveToDLQ(ctx, n, "max stream delivery count exceeded")
+			if err := wp.repo.MoveToDLQ(ctx, n, "max stream delivery count exceeded"); err != nil {
+				logger.Error("failed to move to DLQ at max delivery, not ACKing", "error", err)
+				return
+			}
 		}
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return

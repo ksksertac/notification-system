@@ -129,6 +129,7 @@ type mockRepo struct {
 	notifications   map[uuid.UUID]*domain.Notification
 	statusUpdates   []statusUpdate
 	dlqEntries      []*domain.Notification
+	dlqErr          error
 	retryIncrements []retryIncrement
 	requeueSetIDs   []uuid.UUID
 }
@@ -201,6 +202,9 @@ func (m *mockRepo) IncrementRetry(ctx context.Context, id uuid.UUID, nextRetryAt
 func (m *mockRepo) MoveToDLQ(ctx context.Context, n *domain.Notification, errorMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.dlqErr != nil {
+		return m.dlqErr
+	}
 	m.dlqEntries = append(m.dlqEntries, n)
 	return nil
 }
@@ -2177,6 +2181,45 @@ func TestProcessMessage_MaxDeliveryCountExceeded(t *testing.T) {
 	repo.mu.Unlock()
 	if dlqCount == 0 {
 		t.Error("expected notification to be moved to DLQ when delivery count exceeds max")
+	}
+}
+
+func TestProcessMessage_MaxDeliveryCountDLQFails(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusProcessing,
+		Channel:  domain.ChannelSMS,
+		Priority: domain.PriorityNormal,
+	}
+	repo.dlqErr = errors.New("redis down")
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.consumer = consumer
+	})
+	wp.repo = repo
+
+	msg := queue.Message{
+		ID:             "msg-max-dlq-fail",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "DLQ fail test",
+		DeliveryCount:  10,
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	consumer.mu.Lock()
+	acked := len(consumer.ackCalls)
+	consumer.mu.Unlock()
+	if acked != 0 {
+		t.Error("expected message NOT to be ACKed when MoveToDLQ fails at max delivery count")
 	}
 }
 

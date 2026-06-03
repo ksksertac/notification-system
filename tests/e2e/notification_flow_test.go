@@ -118,7 +118,7 @@ func setupTestEnvWithRateLimit(t *testing.T, rateLimit int) *testEnv {
 	r := chi.NewRouter()
 	r.Use(middleware.CorrelationID)
 	r.Use(middleware.Recovery(logger))
-	r.Use(middleware.RateLimit(client, rateLimit))
+	r.Use(middleware.RateLimit(client, rateLimit, rateLimit))
 	r.Use(middleware.Logging(logger, metrics))
 	r.Use(middleware.MaxBodySize(2 << 20))
 
