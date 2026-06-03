@@ -61,7 +61,7 @@ func NewRouter(
 
 	r.Group(func(r chi.Router) {
 		if apiKey != "" {
-			r.Use(middleware.APIKeyAuth(apiKey))
+			r.Use(middleware.WSAPIKeyAuth(apiKey))
 		}
 		r.Get("/ws", wsHub.HandleWS)
 	})

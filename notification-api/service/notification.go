@@ -148,12 +148,13 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 	batchID := uuid.New()
 	now := time.Now().UTC()
 
-	notifications := make([]*domain.Notification, 0, len(req.Notifications))
+	var newNotifications []*domain.Notification
+	var replayedNotifications []*domain.Notification
 	for _, r := range req.Notifications {
 		if r.IdempotencyKey != "" {
 			existing, err := s.repo.GetByIdempotencyKey(ctx, r.IdempotencyKey)
 			if err == nil && existing != nil {
-				notifications = append(notifications, existing)
+				replayedNotifications = append(replayedNotifications, existing)
 				continue
 			}
 		}
@@ -187,15 +188,19 @@ func (s *notificationService) CreateBatch(ctx context.Context, req domain.BatchC
 			n.ScheduledAt = r.ScheduledAt
 		}
 
-		notifications = append(notifications, n)
+		newNotifications = append(newNotifications, n)
 	}
 
-	if err := s.repo.CreateBatch(ctx, notifications); err != nil {
-		return nil, nil, fmt.Errorf("creating batch: %w", err)
+	if len(newNotifications) > 0 {
+		if err := s.repo.CreateBatch(ctx, newNotifications); err != nil {
+			return nil, nil, fmt.Errorf("creating batch: %w", err)
+		}
 	}
+
+	notifications := append(newNotifications, replayedNotifications...)
 
 	var immediate []*domain.Notification
-	for _, n := range notifications {
+	for _, n := range newNotifications {
 		if n.ScheduledAt == nil {
 			immediate = append(immediate, n)
 		}

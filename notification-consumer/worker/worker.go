@@ -238,8 +238,12 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 	}
 
 	updated, err := wp.repo.UpdateStatus(ctx, msg.NotificationID, n.Status, domain.StatusProcessing)
-	if err != nil || !updated {
-		logger.Warn("failed to transition to processing, skipping", "error", err, "updated", updated)
+	if err != nil {
+		logger.Error("failed to transition to processing, not ACKing for redelivery", "error", err)
+		return
+	}
+	if !updated {
+		logger.Warn("CAS miss on processing transition, another consumer claimed it")
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
