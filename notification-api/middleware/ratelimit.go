@@ -48,7 +48,7 @@ func RateLimit(redisClient goredis.UniversalClient, globalLimit, perUserLimit in
 				result, err := apiRateLimitScript.Run(ctx, redisClient, []string{userKey},
 					perUserLimit, 1000, now).Int64()
 				if err != nil {
-					slog.Warn("rate limiter redis error for user key, using in-memory fallback", "error", err, "apiKey", apiKey)
+					slog.Warn("rate limiter redis error for user key, using in-memory fallback", "error", err)
 					limiterVal, _ := userLimiters.LoadOrStore(apiKey, rate.NewLimiter(rate.Limit(perUserLimit), perUserLimit))
 					limiter := limiterVal.(*rate.Limiter)
 					if !limiter.Allow() {

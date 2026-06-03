@@ -80,8 +80,8 @@ Client ──→ Rate Limiter (1000/s) ──→ Validation ──→ Immediate 
 
 | Feature | Implementation |
 |---------|---------------|
-| **API Key Authentication** | `X-API-Key` header with timing-safe comparison (`subtle.ConstantTimeCompare`), protects `/api/v1/*` routes (API key rate limit log'larında plaintext olarak loglanıyor — log erişimi olan kişiler key'i görebilir; K8s ConfigMap'te plaintext saklanıyor, Secret kullanılmalı) |
-| **WebSocket Origin Validation** | Per-request origin check against configurable allowlist (`WS_ALLOWED_ORIGINS`) |
+| **API Key Authentication** | `X-API-Key` header (or `?api_key=` query param for WebSocket) with timing-safe comparison (`subtle.ConstantTimeCompare`), protects `/api/v1/*` and `/ws` routes. K8s secrets stored in K8s Secret objects (not ConfigMap) |
+| **WebSocket Auth + Origin Validation** | `/ws` requires API key authentication (header or query param). Per-request origin check against configurable allowlist (`WS_ALLOWED_ORIGINS`) |
 | **WebSocket Heartbeat** | Ping/pong every 30s, 60s read deadline — detects and evicts stale connections |
 | **WebSocket Connection Limit** | Max 1000 concurrent connections to prevent resource exhaustion |
 | **Rate Limiting** | Global Redis sliding window (1000 req/s), returns `429` with `Retry-After` header (rate limit kontrolü auth'tan önce çalıştığı için geçersiz API key'ler bile rate limit oluşturur — bu davranış farkı ile geçerli/geçersiz key ayrımı yapılabilir) |

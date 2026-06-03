@@ -1995,14 +1995,14 @@ func TestProcessMessage_UpdateStatusWithDetailsError(t *testing.T) {
 	ctx := context.Background()
 	wp.processMessage(ctx, msg)
 
-	// Even though UpdateStatusWithDetails failed, message should still be acked
+	// When UpdateStatusWithDetails fails, message must NOT be acked so it gets redelivered
 	consumer.mu.Lock()
-	if len(consumer.ackCalls) == 0 {
-		t.Error("expected message to be acknowledged even when UpdateStatusWithDetails fails")
+	if len(consumer.ackCalls) != 0 {
+		t.Error("expected message NOT to be acknowledged when UpdateStatusWithDetails fails")
 	}
 	consumer.mu.Unlock()
 
-	// Broadcaster should still be called with StatusDelivered
+	// Broadcaster should NOT be called since status update failed
 	broadcaster.mu.Lock()
 	foundDelivered := false
 	for _, b := range broadcaster.broadcasts {
@@ -2012,8 +2012,8 @@ func TestProcessMessage_UpdateStatusWithDetailsError(t *testing.T) {
 		}
 	}
 	broadcaster.mu.Unlock()
-	if !foundDelivered {
-		t.Error("expected broadcaster to be called with StatusDelivered even on update error")
+	if foundDelivered {
+		t.Error("expected broadcaster NOT to be called with StatusDelivered when update fails")
 	}
 }
 

@@ -42,7 +42,6 @@ func NewRouter(
 
 	r.Get("/health", hh.Health)
 	r.Get("/metrics", metrics.Metrics)
-	r.Get("/ws", wsHub.HandleWS)
 	r.Get("/swagger", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/swagger/index.html", http.StatusMovedPermanently)
 	})
@@ -58,6 +57,13 @@ func NewRouter(
 		r.Get("/notifications/{id}", nh.GetByID)
 		r.Get("/notifications/batch/{batchId}", nh.GetByBatchID)
 		r.Patch("/notifications/{id}/cancel", nh.Cancel)
+	})
+
+	r.Group(func(r chi.Router) {
+		if apiKey != "" {
+			r.Use(middleware.APIKeyAuth(apiKey))
+		}
+		r.Get("/ws", wsHub.HandleWS)
 	})
 
 	return r

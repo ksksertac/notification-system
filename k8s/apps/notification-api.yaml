@@ -9,12 +9,10 @@ data:
   SERVER_WRITE_TIMEOUT: "15s"
   SERVER_SHUTDOWN_TIMEOUT: "30s"
   REDIS_ADDR: "redis:6379"
-  REDIS_PASSWORD: ""
   REDIS_DB: "0"
   DB_HOST: "pgbouncer"
   DB_PORT: "5432"
   DB_USER: "notification"
-  DB_PASSWORD: "notification_secret"
   DB_NAME: "notification_db"
   DB_SSL_MODE: "disable"
   DB_MAX_OPEN_CONNS: "5"
@@ -28,6 +26,16 @@ data:
   RETRY_MAX_ATTEMPTS: "5"
   WEBHOOK_URL: "https://webhook.site/test"
   LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notification-api-secrets
+  namespace: notification
+type: Opaque
+stringData:
+  DB_PASSWORD: "notification_secret"
+  REDIS_PASSWORD: ""
   API_KEY: "demo-api-key-2024"
 ---
 apiVersion: apps/v1
@@ -56,6 +64,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: notification-api-config
+            - secretRef:
+                name: notification-api-secrets
           readinessProbe:
             httpGet:
               path: /health

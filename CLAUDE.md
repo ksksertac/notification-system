@@ -62,6 +62,15 @@ This project was developed using Claude Code (Anthropic's AI coding assistant) a
 
 - **Notification Overview Dashboard**: Grafana dashboard with today/week/month delivery counts, failure rates, success rate %, avg delivery time, p50/p95/p99 latency percentiles, channel breakdown (donut chart + bar gauge), rate limit hits, circuit breaker opens, cumulative totals. Filterable by channel (email/sms/push).
 - **Redis Cluster Support**: All services migrated from `*redis.Client` to `redis.UniversalClient` interface. New `shared/redis/client.go` factory creates standalone or cluster client based on `REDIS_CLUSTER_ADDRS` env var. Zero code change needed to switch between modes — same Lua scripts, same logic. Global indexes remain single-shard by design (documented limitation with scaling guidance).
+- **ACK Safety Hardening (5 fixes)**:
+  - Consumer no longer ACKs stream messages when side effects fail. `UpdateStatusWithDetails` error after delivery → message stays unACKed for XCLAIM redelivery (was: ACK anyway, causing stuck `processing` status and eventual duplicate delivery via scheduler recovery).
+  - `handleFailure` now returns `bool` — `MoveToDLQ` or `IncrementRetry` failure → not ACKed, message redelivered.
+  - CB/rate-limit re-enqueue path: `UpdateStatus`, `UpdateRequeueCount`, and `AddToRequeueSet` failures each abort without ACK (was: fire-and-forget with ACK, causing silent notification loss).
+  - `reEnqueue` now returns `error` so callers can gate ACK on success.
+  - Test `TestProcessMessage_UpdateStatusWithDetailsError` updated to assert no-ACK on failure.
+- **WebSocket Auth**: `/ws` endpoint moved behind `APIKeyAuth` middleware. Supports both `X-API-Key` header and `?api_key=` query parameter (browsers cannot set headers on WebSocket upgrade).
+- **API Key Log Leak Fix**: Removed plaintext API key from rate limiter Redis fallback warning log (`ratelimit.go`).
+- **K8s Secret Hygiene**: Moved `DB_PASSWORD`, `REDIS_PASSWORD`, `API_KEY` from ConfigMap to K8s Secret across all 4 service manifests. Deployments now mount both `configMapRef` and `secretRef`.
 
 ## Key Commands Used
 

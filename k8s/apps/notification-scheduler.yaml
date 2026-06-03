@@ -5,12 +5,20 @@ metadata:
   namespace: notification
 data:
   REDIS_ADDR: "redis:6379"
-  REDIS_PASSWORD: ""
   REDIS_DB: "0"
   QUEUE_CONSUMER_GROUP: "notification-workers"
   SCHEDULER_POLL_INTERVAL: "5s"
   SCHEDULER_BATCH_SIZE: "500"
   LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notification-scheduler-secrets
+  namespace: notification
+type: Opaque
+stringData:
+  REDIS_PASSWORD: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,6 +44,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: notification-scheduler-config
+            - secretRef:
+                name: notification-scheduler-secrets
           resources:
             requests:
               cpu: 100m

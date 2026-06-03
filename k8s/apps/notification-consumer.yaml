@@ -5,7 +5,6 @@ metadata:
   namespace: notification
 data:
   REDIS_ADDR: "redis:6379"
-  REDIS_PASSWORD: ""
   REDIS_DB: "0"
   QUEUE_CONSUMER_GROUP: "notification-workers"
   QUEUE_WEIGHT_HIGH: "10"
@@ -24,6 +23,15 @@ data:
   WEBHOOK_URL: "https://webhook.site/test"
   PROVIDER_TIMEOUT: "10s"
   LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notification-consumer-secrets
+  namespace: notification
+type: Opaque
+stringData:
+  REDIS_PASSWORD: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +59,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: notification-consumer-config
+            - secretRef:
+                name: notification-consumer-secrets
           resources:
             requests:
               cpu: 100m

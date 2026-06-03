@@ -13,6 +13,9 @@ func APIKeyAuth(apiKey string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			provided := r.Header.Get("X-API-Key")
 			if provided == "" {
+				provided = r.URL.Query().Get("api_key")
+			}
+			if provided == "" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				json.NewEncoder(w).Encode(map[string]string{

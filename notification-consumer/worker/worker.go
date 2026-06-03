@@ -243,7 +243,8 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		if n.RequeueCount >= domain.MaxRequeueCount {
 			logger.Error("max requeue count exceeded, moving to DLQ", "requeue_count", n.RequeueCount)
 			if err := wp.repo.MoveToDLQ(ctx, n, "max requeue count exceeded (circuit breaker)"); err != nil {
-				logger.Error("failed to move notification to DLQ", "error", err)
+				logger.Error("failed to move to DLQ, not ACKing for redelivery", "error", err)
+				return
 			}
 			if wp.broadcaster != nil {
 				wp.broadcaster.Broadcast(n.ID, domain.StatusFailed)
@@ -252,9 +253,18 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 			return
 		}
 		n.RequeueCount++
-		wp.repo.UpdateRequeueCount(ctx, n.ID, n.RequeueCount)
-		wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued)
-		wp.reEnqueue(ctx, n, cbBackoffDelay(n.RequeueCount))
+		if err := wp.repo.UpdateRequeueCount(ctx, n.ID, n.RequeueCount); err != nil {
+			logger.Error("failed to update requeue count, not ACKing for redelivery", "error", err)
+			return
+		}
+		if _, err := wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued); err != nil {
+			logger.Error("failed to revert status to queued, not ACKing for redelivery", "error", err)
+			return
+		}
+		if err := wp.reEnqueue(ctx, n, cbBackoffDelay(n.RequeueCount)); err != nil {
+			logger.Error("failed to add to requeue set, not ACKing for redelivery", "error", err)
+			return
+		}
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
@@ -269,8 +279,14 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		if wp.metrics != nil {
 			wp.metrics.RecordRateLimitHit()
 		}
-		wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued)
-		wp.reEnqueue(ctx, n, 500*time.Millisecond)
+		if _, err := wp.repo.UpdateStatus(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusQueued); err != nil {
+			logger.Error("failed to revert status to queued, not ACKing for redelivery", "error", err)
+			return
+		}
+		if err := wp.reEnqueue(ctx, n, 500*time.Millisecond); err != nil {
+			logger.Error("failed to add to requeue set, not ACKing for redelivery", "error", err)
+			return
+		}
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
@@ -298,7 +314,10 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 		if wp.metrics != nil {
 			wp.metrics.RecordFailure(string(msg.Channel))
 		}
-		wp.handleFailure(ctx, n, sendErr, result, logger)
+		if !wp.handleFailure(ctx, n, sendErr, result, logger) {
+			logger.Error("side effect failed after send error, not ACKing for redelivery")
+			return
+		}
 		wp.consumer.Ack(ctx, msg.StreamName, wp.cfg.ConsumerGroup, msg.ID)
 		return
 	}
@@ -313,8 +332,10 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 	providerID := result.ProviderMsgID
 	updated, updateErr := wp.repo.UpdateStatusWithDetails(ctx, msg.NotificationID, domain.StatusProcessing, domain.StatusDelivered, &providerID, nil)
 	if updateErr != nil {
-		logger.Error("failed to update status to delivered", "error", updateErr)
-	} else if !updated {
+		logger.Error("failed to update status to delivered, not ACKing for redelivery", "error", updateErr)
+		return
+	}
+	if !updated {
 		logger.Warn("status update to delivered failed, status may have changed concurrently")
 	}
 
@@ -327,29 +348,31 @@ func (wp *WorkerPool) processMessage(ctx context.Context, msg queue.Message) {
 	logger.Info("notification delivered", "provider_msg_id", providerID, "latency_ms", latency.Milliseconds())
 }
 
-func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification, sendErr error, result *delivery.SendResult, logger *slog.Logger) {
+func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification, sendErr error, result *delivery.SendResult, logger *slog.Logger) bool {
 	errMsg := sendErr.Error()
 
 	if result != nil && !result.Retryable {
 		logger.Error("permanent failure, moving to DLQ", "error", errMsg)
 		if err := wp.repo.MoveToDLQ(ctx, n, errMsg); err != nil {
 			logger.Error("failed to move notification to DLQ", "error", err)
+			return false
 		}
 		if wp.broadcaster != nil {
 			wp.broadcaster.Broadcast(n.ID, domain.StatusFailed)
 		}
-		return
+		return true
 	}
 
 	if !wp.retry.ShouldRetry(n.RetryCount+1, wp.cfg.MaxRetries) {
 		logger.Error("max retries exceeded, moving to DLQ", "error", errMsg, "retry_count", n.RetryCount)
 		if err := wp.repo.MoveToDLQ(ctx, n, errMsg); err != nil {
 			logger.Error("failed to move notification to DLQ", "error", err)
+			return false
 		}
 		if wp.broadcaster != nil {
 			wp.broadcaster.Broadcast(n.ID, domain.StatusFailed)
 		}
-		return
+		return true
 	}
 
 	delay := wp.retry.NextDelay(n.RetryCount + 1)
@@ -360,6 +383,7 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 
 	if err := wp.repo.IncrementRetry(ctx, n.ID, nextRetry, errMsg); err != nil {
 		logger.Error("failed to increment retry count", "error", err)
+		return false
 	}
 
 	if wp.broadcaster != nil {
@@ -367,13 +391,12 @@ func (wp *WorkerPool) handleFailure(ctx context.Context, n *domain.Notification,
 	}
 
 	logger.Warn("retry scheduled via persistence", "retry_count", n.RetryCount+1, "next_retry_at", nextRetry, "error", errMsg)
+	return true
 }
 
-func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification, delay time.Duration) {
+func (wp *WorkerPool) reEnqueue(ctx context.Context, n *domain.Notification, delay time.Duration) error {
 	requeueAt := time.Now().Add(delay)
-	if err := wp.repo.AddToRequeueSet(ctx, n.ID, requeueAt); err != nil {
-		wp.logger.Error("failed to add to requeue set", "notification_id", n.ID, "error", err)
-	}
+	return wp.repo.AddToRequeueSet(ctx, n.ID, requeueAt)
 }
 
 func cbBackoffDelay(requeueCount int) time.Duration {
