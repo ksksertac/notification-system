@@ -2135,6 +2135,102 @@ func TestProcessMessage_UpdateStatusWithDetailsCASRetryAlsoFails(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_MaxDeliveryCountExceeded(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusProcessing,
+		Channel:  domain.ChannelSMS,
+		Priority: domain.PriorityNormal,
+	}
+
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.consumer = consumer
+	})
+	wp.repo = repo
+
+	msg := queue.Message{
+		ID:             "msg-max-delivery",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelSMS,
+		Recipient:      "+1234567890",
+		Content:        "Max delivery test",
+		DeliveryCount:  10,
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	consumer.mu.Lock()
+	acked := len(consumer.ackCalls)
+	consumer.mu.Unlock()
+	if acked == 0 {
+		t.Error("expected message to be force-ACKed when delivery count exceeds max")
+	}
+
+	repo.mu.Lock()
+	dlqCount := len(repo.dlqEntries)
+	repo.mu.Unlock()
+	if dlqCount == 0 {
+		t.Error("expected notification to be moved to DLQ when delivery count exceeds max")
+	}
+}
+
+func TestProcessMessage_MaxDeliveryCountNotReached(t *testing.T) {
+	nID := uuid.New()
+	repo := newMockRepo()
+	repo.notifications[nID] = &domain.Notification{
+		ID:       nID,
+		Status:   domain.StatusQueued,
+		Channel:  domain.ChannelEmail,
+		Priority: domain.PriorityNormal,
+	}
+
+	provider := &mockProvider{
+		sendFn: func(ctx context.Context, recipient, channel, content string) (*delivery.SendResult, error) {
+			return &delivery.SendResult{ProviderMsgID: "msg-ok"}, nil
+		},
+	}
+	consumer := &mockConsumer{}
+
+	wp := newTestWorkerPool(func(o *testPoolOpts) {
+		o.provider = provider
+		o.consumer = consumer
+	})
+	wp.repo = repo
+
+	msg := queue.Message{
+		ID:             "msg-below-max",
+		StreamName:     queue.StreamNormal,
+		NotificationID: nID,
+		Channel:        domain.ChannelEmail,
+		Recipient:      "user@test.com",
+		Content:        "Below max test",
+		DeliveryCount:  9,
+	}
+
+	ctx := context.Background()
+	wp.processMessage(ctx, msg)
+
+	consumer.mu.Lock()
+	acked := len(consumer.ackCalls)
+	consumer.mu.Unlock()
+	if acked == 0 {
+		t.Error("expected normal processing when delivery count is below max")
+	}
+
+	repo.mu.Lock()
+	dlqCount := len(repo.dlqEntries)
+	repo.mu.Unlock()
+	if dlqCount != 0 {
+		t.Error("expected no DLQ entry when delivery count is below max")
+	}
+}
+
 func TestPollStreams_DeficitRoundRobin_NoStarvation(t *testing.T) {
 	t.Run("low priority gets served when high priority is empty", func(t *testing.T) {
 		nIDLow := uuid.New()
